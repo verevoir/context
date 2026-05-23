@@ -1,0 +1,82 @@
+# @verevoir/context
+
+In-process content + symbol cache for LLM context windows. Keyed `(sourceId, version, itemId)`. Tree-sitter symbol extraction + grep + a cached-read bridge to `@verevoir/sources`, all as optional subpath imports.
+
+## Purpose
+
+Lets an LLM agent navigate a codebase (or any versioned content source) without re-fetching the same files every turn. The cache is purpose-built for LLM-context flows: lazy population, cheap repeated lookups, symbol-aware indexing for files where that helps.
+
+Pairs naturally with `@verevoir/sources` for the read side, but does not require it — consumers can populate the store from any source.
+
+## Subpaths
+
+- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, key + symbol types. No external dependencies.
+- `@verevoir/context/code` — tree-sitter `parseSymbols`, `detectLanguage`, `findSymbols` over the store. Optional peer deps on tree-sitter packages.
+- `@verevoir/context/sources` — `cachedReadFile` bridge to `@verevoir/sources/github`. Optional peer dep on `@verevoir/sources`.
+
+## Install
+
+```bash
+npm install @verevoir/context
+# Optional add-ons for the subpaths:
+npm install tree-sitter tree-sitter-typescript tree-sitter-javascript
+npm install @verevoir/sources
+```
+
+## Canonical usage
+
+```ts
+import { contextStore, grep, createContextStore } from '@verevoir/context';
+import { findSymbols, parseSymbols, detectLanguage } from '@verevoir/context/code';
+import { cachedReadFile } from '@verevoir/context/sources';
+
+// Populate the store.
+contextStore.setContent(
+  { sourceId: 'https://github.com/acme/repo', version: '', itemId: 'src/auth.ts' },
+  'export class AuthHandler {}',
+);
+
+// Grep across cached items.
+const hits = grep('Auth', { sources: [{ sourceId: '...', version: '' }] });
+
+// Find symbols by name (lazy-parses tree-sitter on miss).
+const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] });
+
+// Cached reads via the @verevoir/sources bridge.
+const content = await cachedReadFile(env, repoUrl, path);
+```
+
+## Key shape
+
+```ts
+interface IndexKey {
+  sourceId: string;  // typically a URL
+  version: string;   // git ref / etag / content hash; '' = default
+  itemId: string;    // path within the source
+}
+```
+
+## Symbol shape
+
+```ts
+interface SymbolEntry {
+  name: string;
+  kind: 'function' | 'class' | 'method' | 'interface' | 'type' | 'enum';
+  startLine: number;
+  endLine: number;
+}
+```
+
+## Per-instance + singleton
+
+Default singleton `contextStore` shared across imports. Isolated instances via `createContextStore()`. `grep`, `findSymbols`, `cachedReadFile` accept a `store` option to target an isolated instance.
+
+## What this is NOT
+
+- Not LSP. Structural symbols only; no type resolution.
+- Not a fetch layer. Reads come from external sources (e.g. `@verevoir/sources`); the store caches what is handed to it.
+- Not persistent. Per-process, in-memory.
+
+## License
+
+Apache-2.0.
