@@ -10,9 +10,11 @@
 //     payload is code; populated lazily by the `/code` subpath)
 //
 // Pure in-memory. No I/O — the cache holds what consumers put in it.
-// Bridges to actual sources live in subpaths (`/code` for tree-sitter
-// symbol extraction; `/sources` for the cached-read helper that pairs
-// with `@verevoir/sources`).
+// `wrapWithCache(source)` here returns a SourceAdapter-shaped facade
+// that reads through the cache; per-source convenience wrappers live
+// in subpaths (`@verevoir/context/github` = wrap-cache + github,
+// `@verevoir/context/fs` = wrap-cache + fs). Tree-sitter symbol
+// extraction lives in `/code`.
 //
 // Scope: per-process. A Cloud Run instance, a long-running worker,
 // a CLI invocation — each holds its own. Cross-instance share lands
@@ -214,4 +216,114 @@ export function grep(pattern: string, scope: GrepScope, options: GrepOptions = {
     }
   }
   return hits;
+}
+
+// ============================================================
+// wrapWithCache — adds read-through caching to any SourceAdapter
+// ============================================================
+
+import type {
+  SourceAdapter,
+  SourceEnv,
+  ReadFileResult,
+  DirEntry,
+  RepoTree,
+} from '@verevoir/sources';
+
+export interface WrapWithCacheOptions {
+  /** Store to read/write. Defaults to the module's singleton. */
+  store?: ContextStore;
+}
+
+/** Returns a `SourceAdapter`-shaped facade that reads through the
+ * ContextStore. A drop-in replacement for the underlying source:
+ * the contract is identical, the wrapping is invisible to callers.
+ *
+ * - `readFile` checks the cache; on miss, fetches via the source
+ *   and populates the cache. Cache hits return `sha: ''` (the
+ *   source's sha is not preserved across cache rounds; callers
+ *   that need a real sha should go to the source directly or
+ *   re-fetch from cache-miss).
+ * - `writeFile` passes through, then populates the cache with the
+ *   just-written content so subsequent reads see it without a
+ *   refetch.
+ * - All other methods are pure pass-throughs at v0; the symbol
+ *   cache and grep operate on what the cache already holds, fed
+ *   primarily by `readFile`. Per-method caching (listFiles tree
+ *   memoisation, etc.) can layer in later if profiling shows it
+ *   matters.
+ *
+ * Per Adam's substrate model (2026-05-23): a specific cache IS a
+ * specific source — same contract — so the consumer just imports
+ * `@verevoir/context/<kind>` and gets caching for free, without
+ * having to thread the adapter through every call site.
+ */
+export function wrapWithCache(
+  source: SourceAdapter,
+  options: WrapWithCacheOptions = {}
+): SourceAdapter {
+  const store = options.store ?? contextStore;
+  return {
+    async readFile(
+      env: SourceEnv,
+      sourceUrl: string,
+      path: string,
+      ref?: string
+    ): Promise<ReadFileResult> {
+      const version = ref ?? '';
+      const key = { sourceId: sourceUrl, version, itemId: path };
+      const cached = store.getContent(key);
+      if (cached !== undefined) {
+        return { content: cached, sha: '' };
+      }
+      const result = await source.readFile(env, sourceUrl, path, ref);
+      store.setContent(key, result.content);
+      return result;
+    },
+    async listFiles(
+      env: SourceEnv,
+      sourceUrl: string,
+      prefix: string,
+      ref?: string
+    ): Promise<DirEntry[]> {
+      return source.listFiles(env, sourceUrl, prefix, ref);
+    },
+    async getRepoTree(env: SourceEnv, sourceUrl: string, ref?: string): Promise<RepoTree> {
+      return source.getRepoTree(env, sourceUrl, ref);
+    },
+    async writeFile(
+      env: SourceEnv,
+      sourceUrl: string,
+      path: string,
+      content: string,
+      branch: string,
+      commitMessage: string
+    ): Promise<void> {
+      await source.writeFile(env, sourceUrl, path, content, branch, commitMessage);
+      // Populate cache with the just-written content. `setContent`
+      // invalidates any cached symbols for the same key, so
+      // downstream find_symbol re-parses on the next query.
+      const key = { sourceId: sourceUrl, version: branch, itemId: path };
+      store.setContent(key, content);
+    },
+    async ensureBranch(env: SourceEnv, sourceUrl: string, branch: string): Promise<void> {
+      return source.ensureBranch(env, sourceUrl, branch);
+    },
+    async ensureFork(env: SourceEnv, upstreamUrl: string): Promise<string> {
+      return source.ensureFork(env, upstreamUrl);
+    },
+    async openPullRequest(
+      env: SourceEnv,
+      targetUrl: string,
+      head: string,
+      base: string,
+      title: string,
+      body: string
+    ): Promise<string> {
+      return source.openPullRequest(env, targetUrl, head, base, title, body);
+    },
+    async getDefaultBranch(env: SourceEnv, sourceUrl: string): Promise<string> {
+      return source.getDefaultBranch(env, sourceUrl);
+    },
+  };
 }
