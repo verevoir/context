@@ -10,9 +10,10 @@ Pairs naturally with [`@verevoir/sources`](https://github.com/verevoir/sources) 
 
 ## Subpaths
 
-- `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, `IndexKey` + `SymbolEntry` types. No external dependencies.
-- `@verevoir/context/code` — tree-sitter symbol extraction (`parseSymbols`, `detectLanguage`) + `findSymbols` over the store. Optional peer deps on `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`.
-- `@verevoir/context/sources` — `cachedReadFile` bridge that pairs the store with `@verevoir/sources/github`. Optional peer dep on `@verevoir/sources`.
+- `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, `wrapWithCache` decorator that adds read-through caching to any `@verevoir/sources` adapter, `IndexKey` + `SymbolEntry` types. No external dependencies; the decorator type-checks against `@verevoir/sources` but doesn't import it at runtime unless you call it.
+- `@verevoir/context/code` — tree-sitter symbol extraction (`parseSymbols`, `detectLanguage`) + `findSymbols` over the store. Optional peer deps on tree-sitter packages.
+- `@verevoir/context/github` — cached GitHub source. Drop-in replacement for `@verevoir/sources/github` that adds read-through caching. Identical contract.
+- `@verevoir/context/fs` — cached local-filesystem source. Drop-in replacement for `@verevoir/sources/fs` that adds read-through caching. Identical contract.
 
 ## Install
 
@@ -65,20 +66,52 @@ const hits = findSymbols('auth', {
 // → [{ name: 'AuthHandler', kind: 'class', ... }, { name: 'authenticate', kind: 'method', ... }]
 ```
 
-### Cached reads against `@verevoir/sources`
+### Cached source — convenience subpaths
+
+Drop-in replacements for `@verevoir/sources/<kind>` that add read-through caching. Same `SourceAdapter` contract; consumers swap the import path to gain caching, no other code changes.
 
 ```ts
 import { envFromProcessEnv } from '@verevoir/sources';
-import { cachedReadFile } from '@verevoir/context/sources';
+import { readFile, writeFile } from '@verevoir/context/github';
 
 const env = envFromProcessEnv();
 if (!env) throw new Error('GITHUB_TOKEN not set');
 
-// First call fetches and caches; second call hits the cache.
-const a = await cachedReadFile(env, 'https://github.com/acme/charts', 'README.md');
-const b = await cachedReadFile(env, 'https://github.com/acme/charts', 'README.md');
-// `b` came from cache; only one HTTP call was made.
+// First call hits the GitHub API; second call serves from cache.
+const a = await readFile(env, 'https://github.com/acme/charts', 'README.md');
+const b = await readFile(env, 'https://github.com/acme/charts', 'README.md');
+
+// Writes pass through and populate the cache.
+await writeFile(
+  env,
+  'https://github.com/acme/charts',
+  'docs/notes.md',
+  '# Notes\n',
+  'feature/notes',
+  'Add notes'
+);
 ```
+
+```ts
+import { readFile } from '@verevoir/context/fs';
+const env = { token: '', forkOrg: '' }; // fs adapter ignores both
+
+const r = await readFile(env, '/path/to/project', 'src/index.ts');
+```
+
+### Cached source — custom adapters
+
+Bring your own SourceAdapter implementation; wrap it once to get the same caching behaviour.
+
+```ts
+import { wrapWithCache } from '@verevoir/context';
+import { mySource } from 'my-source-pkg'; // implements @verevoir/sources's SourceAdapter
+
+const cached = wrapWithCache(mySource);
+const r = await cached.readFile(env, sourceUrl, path);
+```
+
+`wrapWithCache(source, { store? })` returns a `SourceAdapter`-shaped facade. Cache hits return `sha: ''` (the source's sha is not preserved across cache rounds; callers that need a real sha should re-fetch from cache-miss or call the underlying source).
 
 ## Key shape
 
@@ -105,7 +138,7 @@ interface SymbolEntry {
 
 ## Per-instance + singleton
 
-The default singleton `contextStore` is shared across imports of the same module. Tests and multi-tenant consumers can call `createContextStore()` to get an isolated instance and pass it via the `store` option on `grep`, `findSymbols`, and `cachedReadFile`.
+The default singleton `contextStore` is shared across imports of the same module. Tests and multi-tenant consumers can call `createContextStore()` to get an isolated instance and pass it via the `store` option on `grep`, `findSymbols`, and `wrapWithCache`.
 
 ## What this is NOT
 
