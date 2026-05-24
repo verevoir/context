@@ -17,6 +17,7 @@ export const fs = wrapWithCache(rawFs);
 export const readFile = fs.readFile.bind(fs);
 export const listFiles = fs.listFiles.bind(fs);
 export const getRepoTree = fs.getRepoTree.bind(fs);
+export const isFresh = fs.isFresh.bind(fs);
 export const writeFile = fs.writeFile.bind(fs);
 export const ensureBranch = fs.ensureBranch.bind(fs);
 export const ensureFork = fs.ensureFork.bind(fs);

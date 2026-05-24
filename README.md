@@ -111,7 +111,29 @@ const cached = wrapWithCache(mySource);
 const r = await cached.readFile(env, sourceUrl, path);
 ```
 
-`wrapWithCache(source, { store? })` returns a `SourceAdapter`-shaped facade. Cache hits return `sha: ''` (the source's sha is not preserved across cache rounds; callers that need a real sha should re-fetch from cache-miss or call the underlying source).
+`wrapWithCache(source, { store?, validationTtlMs?, now? })` returns a `SourceAdapter`-shaped facade. Cache hits preserve the source-returned `sha` (so callers can use it as a freshness handle).
+
+### Freshness validation
+
+`wrapWithCache` uses the source's `isFresh` primitive (from `@verevoir/sources@^0.3.0`) to validate cache entries instead of returning forever within the process.
+
+- Inside `validationTtlMs` (default **10s**), cache hits serve without asking the source — same fast path as before.
+- After the window elapses, the wrapper calls `source.isFresh(env, url, path, version, ref)`. `true` → refresh `cachedAt` and serve cache; `false` → re-fetch.
+- `validationTtlMs: 0` validates every cache hit; `validationTtlMs: Infinity` never validates.
+
+The 10s default covers a tool-loop's burst of correlated reads without piling up upstream pings. It's a dial — tune based on observed cost vs staleness.
+
+```ts
+import { wrapWithCache } from '@verevoir/context';
+import { github } from '@verevoir/sources/github';
+
+// Default 10s TTL.
+const cached = wrapWithCache(github);
+
+// Or tune it explicitly.
+const eager = wrapWithCache(github, { validationTtlMs: 1000 });    // probe every second
+const lazy  = wrapWithCache(github, { validationTtlMs: 60_000 });  // once a minute
+```
 
 ## Key shape
 

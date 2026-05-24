@@ -10,15 +10,16 @@ Pairs naturally with `@verevoir/sources` for the read side, but does not require
 
 ## Subpaths
 
-- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, key + symbol types. No external dependencies.
+- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, key + symbol types. No external dependencies.
 - `@verevoir/context/code` — tree-sitter `parseSymbols`, `detectLanguage`, `findSymbols` over the store. Optional peer deps on tree-sitter packages.
-- `@verevoir/context/sources` — `cachedReadFile` bridge to `@verevoir/sources/github`. Optional peer dep on `@verevoir/sources`.
+- `@verevoir/context/github` — `wrapWithCache(github)` drop-in. Optional peer dep on `@verevoir/sources@^0.3.0`.
+- `@verevoir/context/fs` — `wrapWithCache(fs)` drop-in. Optional peer dep on `@verevoir/sources@^0.3.0`.
 
 ## Install
 
 ```bash
 npm install @verevoir/context
-# Optional add-ons for the subpaths:
+# Optional add-ons:
 npm install tree-sitter tree-sitter-typescript tree-sitter-javascript
 npm install @verevoir/sources
 ```
@@ -26,25 +27,33 @@ npm install @verevoir/sources
 ## Canonical usage
 
 ```ts
-import { contextStore, grep, createContextStore } from '@verevoir/context';
-import { findSymbols, parseSymbols, detectLanguage } from '@verevoir/context/code';
-import { cachedReadFile } from '@verevoir/context/sources';
+import { contextStore, grep, wrapWithCache, createContextStore } from '@verevoir/context';
+import { findSymbols } from '@verevoir/context/code';
+import { readFile } from '@verevoir/context/github';
 
-// Populate the store.
-contextStore.setContent(
-  { sourceId: 'https://github.com/acme/repo', version: '', itemId: 'src/auth.ts' },
-  'export class AuthHandler {}',
-);
+// Cached source: read-through + freshness-validated.
+const r = await readFile(env, 'https://github.com/acme/repo', 'README.md');
+
+// Or wrap a custom adapter.
+const cached = wrapWithCache(mySource, { validationTtlMs: 10_000 });
 
 // Grep across cached items.
 const hits = grep('Auth', { sources: [{ sourceId: '...', version: '' }] });
 
 // Find symbols by name (lazy-parses tree-sitter on miss).
 const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] });
-
-// Cached reads via the @verevoir/sources bridge.
-const content = await cachedReadFile(env, repoUrl, path);
 ```
+
+## Freshness validation
+
+`wrapWithCache` uses `SourceAdapter.isFresh` (added in `@verevoir/sources@0.3.0`) to validate cached entries instead of returning forever within the process.
+
+- Cache hits inside `validationTtlMs` (default **10s**) serve without asking the source.
+- After the window, the wrapper calls `source.isFresh(env, url, path, version, ref)`. True → touch cachedAt + serve cache. False → re-fetch.
+- `validationTtlMs: 0` validates on every hit; `Infinity` never validates.
+- The 10s default covers a tool-loop's burst of correlated reads; it's a dial to tune from observed cost vs staleness.
+
+`store.getCached(key)` returns the full `{ content, version, cachedAt }` triple. `store.getContent(key)` returns just the content (used by `grep`).
 
 ## Key shape
 
