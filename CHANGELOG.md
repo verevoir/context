@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — 2026-05-24
+
+- Docs: README + llms.txt gain a "Most consumers reach this via MCP" section pointing at `@verevoir/mcp` and the `alwaysLoad: true` Claude Code config. Notes that the MCP server wires `@verevoir/context/github` + `/fs` under the hood, so its tools transparently benefit from `wrapWithCache`'s read-through-with-validation.
+
 ## 0.3.0 — 2026-05-24
 
 **Read-through-with-validation** — `wrapWithCache` now uses the new `SourceAdapter.isFresh` primitive (added in `@verevoir/sources@0.3.0`) to validate cached entries instead of returning forever within the process.

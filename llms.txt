@@ -8,6 +8,12 @@ Lets an LLM agent navigate a codebase (or any versioned content source) without 
 
 Pairs naturally with `@verevoir/sources` for the read side, but does not require it — consumers can populate the store from any source.
 
+## Most consumers reach this via MCP
+
+If you're driving an LLM agent and want cached source reads + symbol search as tools, run the `@verevoir/mcp` server — it wires `@verevoir/context/github` + `@verevoir/context/fs` under the hood, so its tools transparently get the in-process cache + `wrapWithCache`'s read-through-with-validation (default 10s TTL). See [`@verevoir/mcp`](https://github.com/verevoir/mcp) for client config; key setting `"alwaysLoad": true` keeps tools out of the deferred-tools pool.
+
+Direct in-process use (below) is for: writing your own MCP server, customising `validationTtlMs`, sharing a single `ContextStore` across multiple wrapped sources, or non-MCP runtimes.
+
 ## Subpaths
 
 - `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, key + symbol types. No external dependencies.
