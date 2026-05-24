@@ -15,9 +15,10 @@ const URL = 'https://stub.test/owner/repo';
  * the methods they exercise; the rest are present but unused. */
 function makeStub(): { adapter: SourceAdapter; methods: Record<string, ReturnType<typeof vi.fn>> } {
   const methods = {
-    readFile: vi.fn<typeof readFileFn>(),
-    listFiles: vi.fn<typeof listFilesFn>(),
-    getRepoTree: vi.fn<typeof getRepoTreeFn>(),
+    readFile: vi.fn<readFileFn>(),
+    listFiles: vi.fn<listFilesFn>(),
+    getRepoTree: vi.fn<getRepoTreeFn>(),
+    isFresh: vi.fn<isFreshFn>(),
     writeFile: vi.fn(),
     ensureBranch: vi.fn(),
     ensureFork: vi.fn(),
@@ -28,6 +29,7 @@ function makeStub(): { adapter: SourceAdapter; methods: Record<string, ReturnTyp
     readFile: methods.readFile,
     listFiles: methods.listFiles,
     getRepoTree: methods.getRepoTree,
+    isFresh: methods.isFresh,
     writeFile: methods.writeFile,
     ensureBranch: methods.ensureBranch,
     ensureFork: methods.ensureFork,
@@ -50,6 +52,13 @@ type listFilesFn = (
   ref?: string
 ) => Promise<DirEntry[]>;
 type getRepoTreeFn = (env: SourceEnv, url: string, ref?: string) => Promise<RepoTree>;
+type isFreshFn = (
+  env: SourceEnv,
+  url: string,
+  path: string,
+  version: string,
+  ref?: string
+) => Promise<boolean>;
 
 beforeEach(() => {
   contextStore.clearAll();
@@ -87,7 +96,7 @@ describe('wrapWithCache — readFile', () => {
     expect(methods.readFile).toHaveBeenCalledTimes(1);
   });
 
-  it('returns empty sha on cache hits (sha is not preserved across rounds)', async () => {
+  it('preserves the source-returned sha on cache hits (so callers can use it as a freshness handle)', async () => {
     const { adapter, methods } = makeStub();
     methods.readFile.mockResolvedValue({ content: 'x', sha: 'real-sha' });
     const cached = wrapWithCache(adapter);
@@ -95,7 +104,7 @@ describe('wrapWithCache — readFile', () => {
     await cached.readFile(ENV, URL, 'x.md');
     const second = await cached.readFile(ENV, URL, 'x.md');
 
-    expect(second.sha).toBe('');
+    expect(second.sha).toBe('real-sha');
   });
 
   it('honours the ref param — different refs are separate cache slots', async () => {
@@ -126,6 +135,125 @@ describe('wrapWithCache — readFile', () => {
         itemId: 'missing.md',
       })
     ).toBeUndefined();
+  });
+});
+
+describe('wrapWithCache — freshness validation (TTL gate)', () => {
+  it('serves cache without calling isFresh while inside the TTL', async () => {
+    const { adapter, methods } = makeStub();
+    methods.readFile.mockResolvedValue({ content: 'body', sha: 'sha-1' });
+    let clock = 1_000_000;
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: 10_000,
+      now: () => clock,
+    });
+
+    await cached.readFile(ENV, URL, 'a.md');
+    clock += 5_000; // still inside the 10s TTL
+    const second = await cached.readFile(ENV, URL, 'a.md');
+
+    expect(second.content).toBe('body');
+    expect(methods.readFile).toHaveBeenCalledTimes(1);
+    expect(methods.isFresh).not.toHaveBeenCalled();
+  });
+
+  it('calls isFresh after the TTL elapses; on true, serves cache and touches cachedAt', async () => {
+    const { adapter, methods } = makeStub();
+    methods.readFile.mockResolvedValue({ content: 'body', sha: 'sha-1' });
+    methods.isFresh.mockResolvedValue(true);
+    let clock = 1_000_000;
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: 10_000,
+      now: () => clock,
+    });
+
+    await cached.readFile(ENV, URL, 'a.md');
+    clock += 15_000; // past TTL
+    const second = await cached.readFile(ENV, URL, 'a.md');
+
+    expect(second.content).toBe('body');
+    expect(methods.isFresh).toHaveBeenCalledTimes(1);
+    expect(methods.isFresh).toHaveBeenCalledWith(ENV, URL, 'a.md', 'sha-1', undefined);
+    expect(methods.readFile).toHaveBeenCalledTimes(1); // not re-fetched
+
+    // The successful isFresh check should have touched cachedAt —
+    // the next read within the new TTL window should not re-check.
+    clock += 5_000;
+    await cached.readFile(ENV, URL, 'a.md');
+    expect(methods.isFresh).toHaveBeenCalledTimes(1); // still 1
+  });
+
+  it('calls isFresh after the TTL elapses; on false, re-fetches from the source', async () => {
+    const { adapter, methods } = makeStub();
+    methods.readFile
+      .mockResolvedValueOnce({ content: 'old', sha: 'sha-old' })
+      .mockResolvedValueOnce({ content: 'new', sha: 'sha-new' });
+    methods.isFresh.mockResolvedValue(false);
+    let clock = 1_000_000;
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: 10_000,
+      now: () => clock,
+    });
+
+    await cached.readFile(ENV, URL, 'a.md');
+    clock += 15_000;
+    const second = await cached.readFile(ENV, URL, 'a.md');
+
+    expect(second.content).toBe('new');
+    expect(second.sha).toBe('sha-new');
+    expect(methods.isFresh).toHaveBeenCalledTimes(1);
+    expect(methods.readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('validationTtlMs = 0 means validate on every cache hit', async () => {
+    const { adapter, methods } = makeStub();
+    methods.readFile.mockResolvedValue({ content: 'x', sha: 's' });
+    methods.isFresh.mockResolvedValue(true);
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: 0,
+    });
+
+    await cached.readFile(ENV, URL, 'a.md');
+    await cached.readFile(ENV, URL, 'a.md');
+    await cached.readFile(ENV, URL, 'a.md');
+
+    expect(methods.isFresh).toHaveBeenCalledTimes(2); // every hit after the first
+    expect(methods.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('validationTtlMs = Infinity means never validate (pre-isFresh behaviour)', async () => {
+    const { adapter, methods } = makeStub();
+    methods.readFile.mockResolvedValue({ content: 'x', sha: 's' });
+    let clock = 1_000_000;
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: Infinity,
+      now: () => clock,
+    });
+
+    await cached.readFile(ENV, URL, 'a.md');
+    clock += 365 * 24 * 60 * 60 * 1000; // one year later
+    await cached.readFile(ENV, URL, 'a.md');
+
+    expect(methods.isFresh).not.toHaveBeenCalled();
+    expect(methods.readFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('wrapWithCache — isFresh pass-through', () => {
+  it('passes isFresh straight through to the source', async () => {
+    const { adapter, methods } = makeStub();
+    methods.isFresh.mockResolvedValue(true);
+    const cached = wrapWithCache(adapter);
+
+    const result = await cached.isFresh(ENV, URL, 'a.md', 'v1', 'main');
+
+    expect(result).toBe(true);
+    expect(methods.isFresh).toHaveBeenCalledWith(ENV, URL, 'a.md', 'v1', 'main');
   });
 });
 

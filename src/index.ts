@@ -63,6 +63,18 @@ function versionPrefix(sourceId: string, version: string): string {
   return `${sourceId}${SEP}${version}${SEP}`;
 }
 
+/** Cached content + the metadata needed to validate it later.
+ * `version` is the source-specific version handle (git blob sha,
+ * FS content hash, Trello dateLastActivity, etc.) — the value
+ * `SourceAdapter.isFresh` will be called with. `cachedAt` is the
+ * ms-epoch timestamp of the last successful fetch or refresh;
+ * `wrapWithCache` uses it to gate freshness checks behind a TTL. */
+export interface CachedContent {
+  content: string;
+  version: string;
+  cachedAt: number;
+}
+
 /** A ContextStore instance — content cache + symbol cache + the
  * housekeeping that keeps them in sync (set-content drops the
  * matching symbols entry; set-symbols presumes content is fresh).
@@ -71,10 +83,26 @@ function versionPrefix(sourceId: string, version: string): string {
  * factory (`createContextStore`) so tests and multi-tenant
  * consumers can spin up isolated instances. */
 export interface ContextStore {
+  /** Returns just the cached content string. Sugar over `getCached`
+   * for consumers (like `grep`) that don't care about version /
+   * cachedAt. */
   getContent(key: IndexKey): string | undefined;
-  setContent(key: IndexKey, content: string): void;
+  /** Returns the full cached record (content + version handle +
+   * cachedAt timestamp). Used by `wrapWithCache` for freshness
+   * validation. */
+  getCached(key: IndexKey): CachedContent | undefined;
+  /** Stores content with an optional version handle. `cachedAt` is
+   * set to `now()` (defaults to `Date.now`; injectable for tests).
+   * Pass an empty `version` when the source has no version concept
+   * (or the caller doesn't have one to record). */
+  setContent(key: IndexKey, content: string, version?: string, now?: () => number): void;
   getSymbols(key: IndexKey): SymbolEntry[] | undefined;
   setSymbols(key: IndexKey, entries: SymbolEntry[]): void;
+  /** Refreshes the `cachedAt` timestamp on an existing entry
+   * without touching content or version. `wrapWithCache` calls this
+   * after a successful `isFresh` check so the next read can serve
+   * from cache without re-checking. No-op when the entry is absent. */
+  touch(key: IndexKey, now?: () => number): void;
   /** Drop both content and symbols for one item. */
   invalidateItem(key: IndexKey): void;
   /** Drop every entry (content + symbols) for one
@@ -90,16 +118,19 @@ export interface ContextStore {
 }
 
 export function createContextStore(): ContextStore {
-  const contents = new Map<string, string>();
+  const contents = new Map<string, CachedContent>();
   const symbols = new Map<string, SymbolEntry[]>();
 
   return {
     getContent(key) {
+      return contents.get(flatKey(key))?.content;
+    },
+    getCached(key) {
       return contents.get(flatKey(key));
     },
-    setContent(key, content) {
+    setContent(key, content, version = '', now = Date.now) {
       const k = flatKey(key);
-      contents.set(k, content);
+      contents.set(k, { content, version, cachedAt: now() });
       // Content changed → any cached symbols for this item are
       // stale; drop them. The next getSymbols miss tells the
       // caller to re-parse.
@@ -110,6 +141,13 @@ export function createContextStore(): ContextStore {
     },
     setSymbols(key, entries) {
       symbols.set(flatKey(key), entries);
+    },
+    touch(key, now = Date.now) {
+      const k = flatKey(key);
+      const existing = contents.get(k);
+      if (existing) {
+        contents.set(k, { ...existing, cachedAt: now() });
+      }
     },
     invalidateItem(key) {
       const k = flatKey(key);
@@ -230,39 +268,58 @@ import type {
   RepoTree,
 } from '@verevoir/sources';
 
+/** Default ms-window during which the wrapper serves cache without
+ * asking the source whether the held version is still current.
+ * 10s is the starting position — long enough to cover a tool-loop's
+ * burst of correlated reads, short enough that the cheap upstream
+ * ping doesn't pile up. Per-call override via `validationTtlMs`.
+ * It's a dial; tune from observed cost vs staleness, not theory. */
+export const DEFAULT_VALIDATION_TTL_MS = 10_000;
+
 export interface WrapWithCacheOptions {
   /** Store to read/write. Defaults to the module's singleton. */
   store?: ContextStore;
+  /** Skip the `isFresh` check entirely when the cached entry's
+   * `cachedAt` is younger than this many milliseconds. Default
+   * 10000. Set to 0 to validate on every cache hit; set to
+   * `Infinity` to never validate (pre-isFresh behaviour). */
+  validationTtlMs?: number;
+  /** Clock injection for tests. Defaults to `Date.now`. */
+  now?: () => number;
 }
 
 /** Returns a `SourceAdapter`-shaped facade that reads through the
- * ContextStore. A drop-in replacement for the underlying source:
- * the contract is identical, the wrapping is invisible to callers.
+ * ContextStore with read-through-with-validation semantics:
  *
- * - `readFile` checks the cache; on miss, fetches via the source
- *   and populates the cache. Cache hits return `sha: ''` (the
- *   source's sha is not preserved across cache rounds; callers
- *   that need a real sha should go to the source directly or
- *   re-fetch from cache-miss).
- * - `writeFile` passes through, then populates the cache with the
- *   just-written content so subsequent reads see it without a
- *   refetch.
- * - All other methods are pure pass-throughs at v0; the symbol
- *   cache and grep operate on what the cache already holds, fed
- *   primarily by `readFile`. Per-method caching (listFiles tree
- *   memoisation, etc.) can layer in later if profiling shows it
- *   matters.
+ * - **`readFile`**: cache lookup first. If a hit and the entry is
+ *   younger than `validationTtlMs` (default 10s), serve from cache.
+ *   Otherwise call `source.isFresh(env, url, path, version, ref)`;
+ *   on `true` refresh `cachedAt` and serve cache, on `false` fall
+ *   through to fetch. Misses fetch + populate the cache.
+ * - **`isFresh`**: pass-through to the source. The wrapper doesn't
+ *   second-guess the source's freshness check — that's its whole
+ *   reason for existing in the contract.
+ * - **`writeFile`**: passes through, then populates the cache with
+ *   the just-written content. The post-write source version isn't
+ *   known (writeFile is `Promise<void>`), so the cached entry has
+ *   `version: ''` and is forced-stale on its next freshness check
+ *   — readers re-fetch and pick up the real sha.
+ * - **Other methods**: pure pass-throughs. The symbol cache and
+ *   grep operate on what `readFile` has populated. Per-method
+ *   caching (listFiles, getRepoTree) can layer in later if
+ *   profiling shows it matters.
  *
  * Per Adam's substrate model (2026-05-23): a specific cache IS a
  * specific source — same contract — so the consumer just imports
- * `@verevoir/context/<kind>` and gets caching for free, without
- * having to thread the adapter through every call site.
+ * `@verevoir/context/<kind>` and gets caching + freshness for free.
  */
 export function wrapWithCache(
   source: SourceAdapter,
   options: WrapWithCacheOptions = {}
 ): SourceAdapter {
   const store = options.store ?? contextStore;
+  const ttl = options.validationTtlMs ?? DEFAULT_VALIDATION_TTL_MS;
+  const now = options.now ?? Date.now;
   return {
     async readFile(
       env: SourceEnv,
@@ -270,14 +327,26 @@ export function wrapWithCache(
       path: string,
       ref?: string
     ): Promise<ReadFileResult> {
-      const version = ref ?? '';
-      const key = { sourceId: sourceUrl, version, itemId: path };
-      const cached = store.getContent(key);
+      const versionKey = ref ?? '';
+      const key = { sourceId: sourceUrl, version: versionKey, itemId: path };
+      const cached = store.getCached(key);
       if (cached !== undefined) {
-        return { content: cached, sha: '' };
+        const age = now() - cached.cachedAt;
+        if (age < ttl) {
+          // Inside the grace window — serve cache without asking.
+          return { content: cached.content, sha: cached.version };
+        }
+        // Past the grace window — validate before serving.
+        const fresh = await source.isFresh(env, sourceUrl, path, cached.version, ref);
+        if (fresh) {
+          // Refresh cachedAt so we don't recheck on the next read.
+          store.touch(key, now);
+          return { content: cached.content, sha: cached.version };
+        }
+        // Stale — fall through to fetch.
       }
       const result = await source.readFile(env, sourceUrl, path, ref);
-      store.setContent(key, result.content);
+      store.setContent(key, result.content, result.sha, now);
       return result;
     },
     async listFiles(
@@ -291,6 +360,15 @@ export function wrapWithCache(
     async getRepoTree(env: SourceEnv, sourceUrl: string, ref?: string): Promise<RepoTree> {
       return source.getRepoTree(env, sourceUrl, ref);
     },
+    async isFresh(
+      env: SourceEnv,
+      sourceUrl: string,
+      path: string,
+      version: string,
+      ref?: string
+    ): Promise<boolean> {
+      return source.isFresh(env, sourceUrl, path, version, ref);
+    },
     async writeFile(
       env: SourceEnv,
       sourceUrl: string,
@@ -300,11 +378,14 @@ export function wrapWithCache(
       commitMessage: string
     ): Promise<void> {
       await source.writeFile(env, sourceUrl, path, content, branch, commitMessage);
-      // Populate cache with the just-written content. `setContent`
+      // Populate cache with the just-written content. Version is
+      // unknown (writeFile returns void), so the entry is forced-
+      // stale next time it leaves the grace window — readers
+      // re-fetch and pick up the real sha. `setContent`
       // invalidates any cached symbols for the same key, so
       // downstream find_symbol re-parses on the next query.
       const key = { sourceId: sourceUrl, version: branch, itemId: path };
-      store.setContent(key, content);
+      store.setContent(key, content, '', now);
     },
     async ensureBranch(env: SourceEnv, sourceUrl: string, branch: string): Promise<void> {
       return source.ensureBranch(env, sourceUrl, branch);

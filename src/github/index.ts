@@ -20,6 +20,7 @@ export const github = wrapWithCache(rawGithub);
 export const readFile = github.readFile.bind(github);
 export const listFiles = github.listFiles.bind(github);
 export const getRepoTree = github.getRepoTree.bind(github);
+export const isFresh = github.isFresh.bind(github);
 export const writeFile = github.writeFile.bind(github);
 export const ensureBranch = github.ensureBranch.bind(github);
 export const ensureFork = github.ensureFork.bind(github);
