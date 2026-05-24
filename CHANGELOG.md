@@ -23,7 +23,7 @@
 
 **Calibration philosophy** (per Adam, 2026-05-24): 10s is the starting position, not a commitment. The TTL is a dial to turn from observed cost vs staleness — the load-bearing decision is per-call configurability, not the default value.
 
-**Breaking**: `ContextStore.setContent` signature gains optional params (still callable as `setContent(key, content)`). `wrapWithCache` cache hits now return the cached `sha`, not empty string. Both are *behavioural* breaks rather than type-shape breaks — most consumers won't notice. Bumped peer dep to `@verevoir/sources@^0.3.0` for the `isFresh` contract.
+**Breaking**: `ContextStore.setContent` signature gains optional params (still callable as `setContent(key, content)`). `wrapWithCache` cache hits now return the cached `sha`, not empty string. Both are _behavioural_ breaks rather than type-shape breaks — most consumers won't notice. Bumped peer dep to `@verevoir/sources@^0.3.0` for the `isFresh` contract.
 
 ## 0.2.0 — 2026-05-23
 

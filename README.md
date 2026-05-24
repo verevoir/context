@@ -137,8 +137,8 @@ import { github } from '@verevoir/sources/github';
 const cached = wrapWithCache(github);
 
 // Or tune it explicitly.
-const eager = wrapWithCache(github, { validationTtlMs: 1000 });    // probe every second
-const lazy  = wrapWithCache(github, { validationTtlMs: 60_000 });  // once a minute
+const eager = wrapWithCache(github, { validationTtlMs: 1000 }); // probe every second
+const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minute
 ```
 
 ## Key shape
