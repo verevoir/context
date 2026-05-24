@@ -20,6 +20,7 @@ Direct in-process consumption (the usage shown below) is for: writing your own M
 - `@verevoir/context/code` — tree-sitter symbol extraction (`parseSymbols`, `detectLanguage`) + `findSymbols` over the store. Optional peer deps on tree-sitter packages.
 - `@verevoir/context/github` — cached GitHub source. Drop-in replacement for `@verevoir/sources/github` that adds read-through caching. Identical contract.
 - `@verevoir/context/fs` — cached local-filesystem source. Drop-in replacement for `@verevoir/sources/fs` that adds read-through caching. Identical contract.
+- `@verevoir/context/notion` — cached Notion source. Drop-in replacement for `@verevoir/sources/notion` that adds read-through caching. Identical contract.
 
 ## Install
 
