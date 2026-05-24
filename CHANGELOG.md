@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — 2026-05-24
+
+- Docs: README + llms.txt gain a "Most consumers reach this via MCP" section pointing at `@verevoir/mcp` and the `alwaysLoad: true` Claude Code config. Notes that the MCP server wires `@verevoir/context/github` + `/fs` under the hood, so its tools transparently benefit from `wrapWithCache`'s read-through-with-validation.
+
 ## 0.3.0 — 2026-05-24
 
 **Read-through-with-validation** — `wrapWithCache` now uses the new `SourceAdapter.isFresh` primitive (added in `@verevoir/sources@0.3.0`) to validate cached entries instead of returning forever within the process.
@@ -19,7 +23,7 @@
 
 **Calibration philosophy** (per Adam, 2026-05-24): 10s is the starting position, not a commitment. The TTL is a dial to turn from observed cost vs staleness — the load-bearing decision is per-call configurability, not the default value.
 
-**Breaking**: `ContextStore.setContent` signature gains optional params (still callable as `setContent(key, content)`). `wrapWithCache` cache hits now return the cached `sha`, not empty string. Both are *behavioural* breaks rather than type-shape breaks — most consumers won't notice. Bumped peer dep to `@verevoir/sources@^0.3.0` for the `isFresh` contract.
+**Breaking**: `ContextStore.setContent` signature gains optional params (still callable as `setContent(key, content)`). `wrapWithCache` cache hits now return the cached `sha`, not empty string. Both are _behavioural_ breaks rather than type-shape breaks — most consumers won't notice. Bumped peer dep to `@verevoir/sources@^0.3.0` for the `isFresh` contract.
 
 ## 0.2.0 — 2026-05-23
 
