@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 — 2026-05-24
+
+- **New: `@verevoir/context/notion`** — cached drop-in for `@verevoir/sources/notion`, identical SourceAdapter contract plus read-through-with-validation via `wrapWithCache`. Consumers swap the import path to get caching with no other code changes.
+- Bumped peer dep on `@verevoir/sources` to `^0.4.0` (the version that ships the Notion adapter).
+
 ## 0.3.1 — 2026-05-24
 
 - Docs: README + llms.txt gain a "Most consumers reach this via MCP" section pointing at `@verevoir/mcp` and the `alwaysLoad: true` Claude Code config. Notes that the MCP server wires `@verevoir/context/github` + `/fs` under the hood, so its tools transparently benefit from `wrapWithCache`'s read-through-with-validation.
