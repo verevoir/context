@@ -309,7 +309,7 @@ export interface WrapWithCacheOptions {
  *   caching (listFiles, getRepoTree) can layer in later if
  *   profiling shows it matters.
  *
- * Per Adam's substrate model (2026-05-23): a specific cache IS a
+ * Per Adam's foundation model (2026-05-23): a specific cache IS a
  * specific source — same contract — so the consumer just imports
  * `@verevoir/context/<kind>` and gets caching + freshness for free.
  */
