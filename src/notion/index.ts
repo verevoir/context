@@ -6,7 +6,7 @@
 // to add caching, no other code changes.
 //
 // All caching logic lives in `wrapWithCache` at the root — this
-// file is just the wiring. Per Adam's substrate framing
+// file is just the wiring. Per Adam's foundation framing
 // (2026-05-23): "specific cache == cache + specific source".
 
 import { notion as rawNotion } from '@verevoir/sources/notion';
