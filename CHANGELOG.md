@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0 — 2026-05-26
+
+- **`ContextStore` can park + restore** — new `serialize(): string` method snapshots the whole store (content + symbols, versioned), and `createContextStore({ serialized })` restores it; malformed / wrong-version input degrades to an empty store rather than throwing. The cache half of the stateless-host handoff: a host parks a warm cache and another picks it up by id, resuming warm without re-fetching. Restored store is an independent copy; `grep` / `findSymbols` work against it with no source access. (STDIO-92 part 1 — the primitive; per-project envelope encryption + blob storage are part 2.)
+
 ## 0.7.0 — 2026-05-26
 
 - **`warmSource` / `grepSource` generalised to any file source** (root export). The cache-warming mechanism is now one adapter-parameterised function — `warmSource(adapter, env, sourceUrl, options)` — that enumerates via `adapter.getRepoTree` and reads via `adapter.readFile`. What varies per source is only enumeration + reading (the `SourceAdapter`); the warming itself (skip binary + oversized, bounded-concurrency parallel reads, `ref`-aware cache keys) is identical everywhere. Adds `WarmSourceOptions` (`store`, `ref`, `concurrency`; default concurrency 8 — bounds remote sources like GitHub, harmless for fs).
