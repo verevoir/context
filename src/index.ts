@@ -408,3 +408,96 @@ export function wrapWithCache(
     },
   };
 }
+
+// ============================================================
+// warmSource — the one cache-warming mechanism, any file source
+// ============================================================
+
+/** Files larger than this are skipped while warming — too big to be
+ * worth pulling into an in-memory index, and almost never source. */
+const MAX_WARM_FILE_BYTES = 1_500_000;
+
+/** Default concurrent file reads while warming. Bounded so a remote
+ * source (GitHub API) can't fire hundreds of requests at once; fine
+ * for local fs too (libuv caps fs I/O underneath regardless). */
+const DEFAULT_WARM_CONCURRENCY = 8;
+
+/** Binary-content heuristic (ripgrep's): a NUL byte in the leading
+ * chunk. Char-code scan so no control-char literal sits in source. */
+function looksBinary(content: string): boolean {
+  const limit = Math.min(content.length, 8000);
+  for (let i = 0; i < limit; i++) {
+    if (content.charCodeAt(i) === 0) return true;
+  }
+  return false;
+}
+
+export interface WarmSourceOptions {
+  /** Store to warm. Defaults to the module's singleton. */
+  store?: ContextStore;
+  /** Source version handle (git ref for GitHub). Defaults to '' — the
+   * adapter's "default / latest". Threaded into the cache key + reads
+   * so warmed entries line up with `readFile` and the search scope. */
+  ref?: string;
+  /** Max concurrent file reads. Default 8. */
+  concurrency?: number;
+}
+
+/** Pull a whole file-source into the `ContextStore` — *the* cache-
+ * warming mechanism, identical across file sources. What varies per
+ * source is only how files are enumerated and read, which the
+ * `SourceAdapter` abstracts (`getRepoTree` + `readFile`). Skips binary
+ * + oversized files, reads up to `concurrency` at a time, and leaves
+ * already-warm entries alone. Once warm, the pure cache-only ops
+ * (`grep`, and `findSymbols` from `@verevoir/context/code`) work
+ * across the whole source. */
+export async function warmSource(
+  adapter: SourceAdapter,
+  env: SourceEnv,
+  sourceUrl: string,
+  options: WarmSourceOptions = {}
+): Promise<void> {
+  const store = options.store ?? contextStore;
+  const ref = options.ref;
+  const version = ref ?? '';
+  const concurrency = options.concurrency ?? DEFAULT_WARM_CONCURRENCY;
+
+  const tree = await adapter.getRepoTree(env, sourceUrl, ref);
+  const blobs = tree.entries.filter(
+    (e) => e.type === 'blob' && !(e.size !== undefined && e.size > MAX_WARM_FILE_BYTES)
+  );
+
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < blobs.length) {
+      const entry = blobs[next++];
+      const key = { sourceId: sourceUrl, version, itemId: entry.path };
+      if (store.getContent(key) !== undefined) continue;
+      try {
+        const { content, sha } = await adapter.readFile(env, sourceUrl, entry.path, ref);
+        if (looksBinary(content)) continue;
+        store.setContent(key, content, sha);
+      } catch {
+        // Raced (file changed/removed since enumeration) or unreadable.
+      }
+    }
+  }
+  const workers = Math.max(1, Math.min(concurrency, blobs.length || 1));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+}
+
+/** Cold grep over any file source: `warmSource` the whole tree, then
+ * run the pure `grep` over the now-warm cache for consistent,
+ * formatted hits. */
+export async function grepSource(
+  adapter: SourceAdapter,
+  env: SourceEnv,
+  sourceUrl: string,
+  pattern: string,
+  options: WarmSourceOptions & GrepOptions = {}
+): Promise<GrepHit[]> {
+  const store = options.store ?? contextStore;
+  const version = options.ref ?? '';
+  await warmSource(adapter, env, sourceUrl, options);
+  return grep(pattern, { sources: [{ sourceId: sourceUrl, version }] }, { ...options, store });
+}
