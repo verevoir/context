@@ -115,11 +115,44 @@ export interface ContextStore {
   /** Drop everything. Test affordance; in production state lives
    * the lifetime of the host process. */
   clearAll(): void;
+  /** Serialise the whole store (content + symbols) to a JSON string —
+   * the *park* half of park/restore. Restore by passing the result to
+   * `createContextStore({ serialized })`. Versioned + round-trips, so a
+   * stateless host can put a warm cache down and pick it up later. */
+  serialize(): string;
 }
 
-export function createContextStore(): ContextStore {
+/** Wire snapshot of a ContextStore — both maps as entry arrays,
+ * versioned so a format change is detectable on restore. */
+interface StoreSnapshot {
+  v: number;
+  contents: Array<[string, CachedContent]>;
+  symbols: Array<[string, SymbolEntry[]]>;
+}
+const SNAPSHOT_VERSION = 1;
+
+export interface CreateContextStoreOptions {
+  /** Restore from a prior `serialize()` snapshot. Malformed input or a
+   * version mismatch yields an empty store (never throws) — a stale
+   * snapshot format degrades to a cold start, not a crash. */
+  serialized?: string;
+}
+
+export function createContextStore(options: CreateContextStoreOptions = {}): ContextStore {
   const contents = new Map<string, CachedContent>();
   const symbols = new Map<string, SymbolEntry[]>();
+
+  if (options.serialized !== undefined) {
+    try {
+      const snap = JSON.parse(options.serialized) as StoreSnapshot;
+      if (snap && snap.v === SNAPSHOT_VERSION) {
+        for (const [k, v] of snap.contents ?? []) contents.set(k, v);
+        for (const [k, v] of snap.symbols ?? []) symbols.set(k, v);
+      }
+    } catch {
+      // Malformed snapshot → cold start (empty store).
+    }
+  }
 
   return {
     getContent(key) {
@@ -176,6 +209,14 @@ export function createContextStore(): ContextStore {
     clearAll() {
       contents.clear();
       symbols.clear();
+    },
+    serialize() {
+      const snap: StoreSnapshot = {
+        v: SNAPSHOT_VERSION,
+        contents: [...contents.entries()],
+        symbols: [...symbols.entries()],
+      };
+      return JSON.stringify(snap);
     },
   };
 }
