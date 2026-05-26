@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-05-26
+
+- **`warmSource` / `grepSource` generalised to any file source** (root export). The cache-warming mechanism is now one adapter-parameterised function — `warmSource(adapter, env, sourceUrl, options)` — that enumerates via `adapter.getRepoTree` and reads via `adapter.readFile`. What varies per source is only enumeration + reading (the `SourceAdapter`); the warming itself (skip binary + oversized, bounded-concurrency parallel reads, `ref`-aware cache keys) is identical everywhere. Adds `WarmSourceOptions` (`store`, `ref`, `concurrency`; default concurrency 8 — bounds remote sources like GitHub, harmless for fs).
+- **New: cold grep + cold `find_symbol` over GitHub** — `@verevoir/context/github` now exports `warmSource` + `grepSource` (github bindings of the generic). `findSymbols` composes over a warmed repo exactly as for fs.
+- `@verevoir/context/fs`'s `warmSource` / `grepSource` are now thin bindings of the generic — identical public API + behaviour. (STDIO-83, GitHub slice + mechanism generalisation.)
+
 ## 0.6.0 — 2026-05-26
 
 - **New: `warmSource` in `@verevoir/context/fs`** — the cold-search primitive extracted from `grepSource`. Pulls a whole local source into the `ContextStore` (enumerate via `getRepoTree`, parallel-read every in-bounds text file, skipping binary + oversized), so any pure cache-only operation then works across the whole source. Cold **symbol** search composes it: `await warmSource(...)` then `findSymbols(query, scope)` from `@verevoir/context/code` (which lazily tree-sitter-parses the warmed content). `grepSource` is now `warmSource` + `grep`. Kept out of the bundled API on `/fs` so the lean fs subpath doesn't pull in tree-sitter — the composition is the consumer's. (STDIO-83, find_symbol slice.)
