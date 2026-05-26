@@ -16,7 +16,7 @@ Direct in-process consumption (the usage shown below) is for: writing your own M
 
 ## Subpaths
 
-- `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, `wrapWithCache` decorator that adds read-through caching to any `@verevoir/sources` adapter, `IndexKey` + `SymbolEntry` types. No external dependencies; the decorator type-checks against `@verevoir/sources` but doesn't import it at runtime unless you call it.
+- `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, `wrapWithCache` decorator that adds read-through caching to any `@verevoir/sources` adapter, `wrapWorkflowWithCache` decorator that does the same for any `@verevoir/workflows` adapter, `IndexKey` + `SymbolEntry` types. No external dependencies; the decorators type-check against `@verevoir/sources` / `@verevoir/workflows` but don't import them at runtime unless you call them.
 - `@verevoir/context/code` — tree-sitter symbol extraction (`parseSymbols`, `detectLanguage`) + `findSymbols` over the store. Optional peer deps on tree-sitter packages.
 - `@verevoir/context/github` — cached GitHub source. Drop-in replacement for `@verevoir/sources/github` that adds read-through caching. Identical contract.
 - `@verevoir/context/fs` — cached local-filesystem source. Drop-in replacement for `@verevoir/sources/fs` that adds read-through caching. Identical contract.
@@ -142,6 +142,20 @@ const eager = wrapWithCache(github, { validationTtlMs: 1000 }); // probe every s
 const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minute
 ```
 
+### Caching a workflow source
+
+`wrapWorkflowWithCache(adapter, { store?, validationTtlMs?, now? })` is the workflow twin of `wrapWithCache` — it returns a `WorkflowAdapter`-shaped facade backed by the same `ContextStore`, so board state parks and restores for free alongside file content (see below).
+
+```ts
+import { wrapWorkflowWithCache } from '@verevoir/context';
+import { notion } from '@verevoir/workflows/notion';
+
+const cached = wrapWorkflowWithCache(notion);
+await cached.getCard(env, boardUrl, cardId); // read-through-with-validation via isCardFresh
+```
+
+`getCard` validates the held `Card.lastActivity` via the adapter's `isCardFresh` once past the TTL window; the list reads (`listColumns` / `listCards` / `listComments` / `listCustomFields`) are TTL-only cached (no per-list freshness primitive), with `listCards` keyed per filter. Writes pass through and invalidate the touched card plus the list views (or the card's comments). Cross-surface invalidation between a workflow cache and a source cache (e.g. a Notion DB-row write dropping the page's source entry) is a separate concern, not yet wired.
+
 ## Key shape
 
 The cache key is `(sourceId, version, itemId)`:
@@ -167,7 +181,7 @@ interface SymbolEntry {
 
 ## Per-instance + singleton
 
-The default singleton `contextStore` is shared across imports of the same module. Tests and multi-tenant consumers can call `createContextStore()` to get an isolated instance and pass it via the `store` option on `grep`, `findSymbols`, and `wrapWithCache`.
+The default singleton `contextStore` is shared across imports of the same module. Tests and multi-tenant consumers can call `createContextStore()` to get an isolated instance and pass it via the `store` option on `grep`, `findSymbols`, `wrapWithCache`, and `wrapWorkflowWithCache`.
 
 ## What this is NOT
 
