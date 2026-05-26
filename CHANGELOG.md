@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 — 2026-05-26
+
+- **New: `grepSource` in `@verevoir/context/fs`** — cold whole-tree search. Where the pure root `grep` only sees content already pulled into the store, `grepSource` enumerates the source via `getRepoTree` (which already skips vendored / build dirs), pulls every in-bounds text file into the `ContextStore` in parallel — warming it for later `readFile` / `grep` / `find_symbol` — then runs the pure `grep` over the warm cache. Binary (NUL-byte) and oversized files are skipped. Owned end to end in Node: no external scanner process, no `PATH` dependence. (STDIO-83, fs slice.)
+
 ## 0.4.0 — 2026-05-24
 
 - **New: `@verevoir/context/notion`** — cached drop-in for `@verevoir/sources/notion`, identical SourceAdapter contract plus read-through-with-validation via `wrapWithCache`. Consumers swap the import path to get caching with no other code changes.
