@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0 — 2026-05-26
+
+- **New: `wrapWorkflowWithCache`** (root export) — the workflow twin of `wrapWithCache`. Wraps any `@verevoir/workflows` `WorkflowAdapter` and routes board reads through the same `ContextStore`, so board state parks + restores for free alongside file content via `serialize()` (0.8.0). `getCard` gets read-through-with-validation against the held `Card.lastActivity` using the adapter's `isCardFresh` primitive (same default 10s `validationTtlMs`, configurable); `listColumns` / `listCards` / `listComments` / `listCustomFields` get TTL-only caching (no per-list freshness primitive — `listCards` is keyed per filter so different filters don't clobber each other); writes (`createCard` / `updateCard` / `moveCard` / `addComment`) pass through then invalidate what they could have changed (the touched card + every list view, or the card's comments). Returned cards/lists are JSON-decoded fresh per read, so a returned reference can't mutate the cache. `@verevoir/workflows` is a new **optional** peer dep — the decorator type-checks against it but doesn't import it at runtime unless called. (STDIO-43 — the workflow-cache + park/restore half of the stateless-host critical path; cross-surface invalidation between the workflow cache and the source cache is a separate, deferred concern.)
+
 ## 0.8.0 — 2026-05-26
 
 - **`ContextStore` can park + restore** — new `serialize(): string` method snapshots the whole store (content + symbols, versioned), and `createContextStore({ serialized })` restores it; malformed / wrong-version input degrades to an empty store rather than throwing. The cache half of the stateless-host handoff: a host parks a warm cache and another picks it up by id, resuming warm without re-fetching. Restored store is an independent copy; `grep` / `findSymbols` work against it with no source access. (STDIO-92 part 1 — the primitive; per-project envelope encryption + blob storage are part 2.)

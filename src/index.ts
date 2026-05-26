@@ -542,3 +542,228 @@ export async function grepSource(
   await warmSource(adapter, env, sourceUrl, options);
   return grep(pattern, { sources: [{ sourceId: sourceUrl, version }] }, { ...options, store });
 }
+
+// ============================================================
+// wrapWorkflowWithCache — read-through caching for a WorkflowAdapter
+// ============================================================
+
+import type {
+  WorkflowAdapter,
+  WorkflowEnv,
+  Card,
+  Column,
+  Comment,
+  CardFilter,
+  CardCreate,
+  CardPatch,
+  CustomFieldDef,
+} from '@verevoir/workflows';
+
+/** Workflow entries share the source cache so that park/restore
+ * (`serialize` / `createContextStore({ serialized })`) snapshots
+ * board state for free, alongside file content. A board has no
+ * ref/commit concept, so every entry for a board lives under the
+ * `(boardUrl, '')` keyspace; the per-card freshness handle
+ * (`Card.lastActivity`) rides in `CachedContent.version`, exactly
+ * as a git blob sha does for files. The `itemId` namespaces the
+ * entity kind within the board so the kinds can't collide and bulk
+ * invalidation can target list views. */
+const WF_VERSION = '';
+const wfCardItem = (cardId: string): string => `card:${cardId}`;
+const wfCommentsItem = (cardId: string): string => `comments:${cardId}`;
+const WF_COLUMNS_ITEM = 'columns';
+const WF_CUSTOM_FIELDS_ITEM = 'customFields';
+/** Stable, order-independent key for a `listCards` filter so the
+ * same filter hits the same cache entry and different filters don't
+ * clobber each other. */
+function wfCardsItem(filter?: CardFilter): string {
+  if (!filter) return 'cards:all';
+  const parts = [
+    filter.columnId ?? '',
+    filter.assigneeId ?? '',
+    filter.labelId ?? '',
+    filter.parentId ?? '',
+    filter.includeBody === false ? 'nb' : 'b',
+    filter.limit != null ? `l${filter.limit}` : '',
+  ];
+  return `cards:${parts.join('|')}`;
+}
+
+export interface WrapWorkflowWithCacheOptions {
+  /** Store to read/write. Defaults to the module's singleton. */
+  store?: ContextStore;
+  /** Window during which a cached entry is served without asking the
+   * source whether it's still current. Default 10s (shared with the
+   * source wrapper). For `getCard`, past the window the wrapper calls
+   * `isCardFresh`; for list reads (no per-list freshness primitive)
+   * the window elapsing forces a re-fetch. */
+  validationTtlMs?: number;
+  /** Clock injection for tests. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/** Returns a `WorkflowAdapter`-shaped facade that reads through the
+ * `ContextStore` — the workflow twin of `wrapWithCache`. The whole
+ * point: board state lands in the same store as file content, so a
+ * stateless host parks both with one `serialize()` and picks them up
+ * by id (STDIO-92 → STDIO-97), resuming warm without re-fetching.
+ *
+ * - **`getCard`**: read-through-with-validation. Cache hit inside the
+ *   grace window serves immediately; past it, `isCardFresh` (against
+ *   the held `Card.lastActivity`) decides serve-vs-refetch — the same
+ *   contract the `WorkflowAdapter` exposes for exactly this purpose.
+ * - **`listColumns` / `listCards` / `listComments` / `listCustomFields`**:
+ *   TTL-only caching. There is no per-list freshness primitive, so
+ *   within the window the cached list is served and past it it's
+ *   re-fetched. A restored or aged list can therefore lag the source
+ *   until the window expires — acceptable for the host's
+ *   orient-on-summaries-then-detail (headers-first) pattern; the
+ *   restore-time freshness policy is STDIO-97's concern.
+ * - **Writes** (`createCard` / `updateCard` / `moveCard` / `addComment`):
+ *   pass through, then invalidate what the write could have changed —
+ *   the touched card plus every list view (membership/order can shift),
+ *   or the card's comments. Keeps a same-process read-after-write
+ *   honest without a freshness round-trip.
+ *
+ * Returned cards/lists are JSON-decoded fresh on every read, so the
+ * cache can't be mutated through a returned reference. Cross-surface
+ * invalidation (a Notion DB-row write dropping the source-cache entry
+ * for that page) is a separate, deferred concern.
+ */
+export function wrapWorkflowWithCache(
+  adapter: WorkflowAdapter,
+  options: WrapWorkflowWithCacheOptions = {}
+): WorkflowAdapter {
+  const store = options.store ?? contextStore;
+  const ttl = options.validationTtlMs ?? DEFAULT_VALIDATION_TTL_MS;
+  const now = options.now ?? Date.now;
+
+  /** TTL-only read-through for the list-shaped reads: serve the cached
+   * JSON within the window, else fetch + repopulate. */
+  async function ttlCached<T>(
+    boardUrl: string,
+    itemId: string,
+    fetcher: () => Promise<T>
+  ): Promise<T> {
+    const key = { sourceId: boardUrl, version: WF_VERSION, itemId };
+    const cached = store.getCached(key);
+    if (cached !== undefined && now() - cached.cachedAt < ttl) {
+      return JSON.parse(cached.content) as T;
+    }
+    const fresh = await fetcher();
+    store.setContent(key, JSON.stringify(fresh), '', now);
+    return fresh;
+  }
+
+  /** Drop every list-view entry for a board. A card write can change
+   * list membership or ordering, so the cached lists (and columns,
+   * for moves/creates) must go even though the individual card entry
+   * is handled separately. */
+  function invalidateLists(boardUrl: string): void {
+    for (const itemId of store.listIndexedItems(boardUrl, WF_VERSION)) {
+      if (itemId.startsWith('cards:') || itemId === WF_COLUMNS_ITEM) {
+        store.invalidateItem({ sourceId: boardUrl, version: WF_VERSION, itemId });
+      }
+    }
+  }
+
+  return {
+    async listColumns(env: WorkflowEnv, boardUrl: string): Promise<Column[]> {
+      return ttlCached<Column[]>(boardUrl, WF_COLUMNS_ITEM, () =>
+        adapter.listColumns(env, boardUrl)
+      );
+    },
+    async listCards(env: WorkflowEnv, boardUrl: string, filter?: CardFilter): Promise<Card[]> {
+      return ttlCached<Card[]>(boardUrl, wfCardsItem(filter), () =>
+        adapter.listCards(env, boardUrl, filter)
+      );
+    },
+    async getCard(env: WorkflowEnv, boardUrl: string, cardId: string): Promise<Card> {
+      const key = { sourceId: boardUrl, version: WF_VERSION, itemId: wfCardItem(cardId) };
+      const cached = store.getCached(key);
+      if (cached !== undefined) {
+        const age = now() - cached.cachedAt;
+        if (age < ttl) {
+          return JSON.parse(cached.content) as Card;
+        }
+        // Past the grace window — validate the held lastActivity.
+        const fresh = await adapter.isCardFresh(env, boardUrl, cardId, cached.version);
+        if (fresh) {
+          store.touch(key, now);
+          return JSON.parse(cached.content) as Card;
+        }
+        // Stale — fall through to re-fetch.
+      }
+      const card = await adapter.getCard(env, boardUrl, cardId);
+      store.setContent(key, JSON.stringify(card), card.lastActivity ?? '', now);
+      return card;
+    },
+    async isCardFresh(
+      env: WorkflowEnv,
+      boardUrl: string,
+      cardId: string,
+      version: string
+    ): Promise<boolean> {
+      return adapter.isCardFresh(env, boardUrl, cardId, version);
+    },
+    async createCard(
+      env: WorkflowEnv,
+      boardUrl: string,
+      columnId: string,
+      fields: CardCreate
+    ): Promise<Card> {
+      const card = await adapter.createCard(env, boardUrl, columnId, fields);
+      store.setContent(
+        { sourceId: boardUrl, version: WF_VERSION, itemId: wfCardItem(card.id) },
+        JSON.stringify(card),
+        card.lastActivity ?? '',
+        now
+      );
+      invalidateLists(boardUrl);
+      return card;
+    },
+    async updateCard(
+      env: WorkflowEnv,
+      boardUrl: string,
+      cardId: string,
+      patch: CardPatch
+    ): Promise<void> {
+      await adapter.updateCard(env, boardUrl, cardId, patch);
+      store.invalidateItem({ sourceId: boardUrl, version: WF_VERSION, itemId: wfCardItem(cardId) });
+      invalidateLists(boardUrl);
+    },
+    async moveCard(
+      env: WorkflowEnv,
+      boardUrl: string,
+      cardId: string,
+      toColumnId: string
+    ): Promise<void> {
+      await adapter.moveCard(env, boardUrl, cardId, toColumnId);
+      store.invalidateItem({ sourceId: boardUrl, version: WF_VERSION, itemId: wfCardItem(cardId) });
+      invalidateLists(boardUrl);
+    },
+    async listComments(env: WorkflowEnv, boardUrl: string, cardId: string): Promise<Comment[]> {
+      return ttlCached<Comment[]>(boardUrl, wfCommentsItem(cardId), () =>
+        adapter.listComments(env, boardUrl, cardId)
+      );
+    },
+    async addComment(
+      env: WorkflowEnv,
+      boardUrl: string,
+      cardId: string,
+      body: string
+    ): Promise<void> {
+      await adapter.addComment(env, boardUrl, cardId, body);
+      store.invalidateItem({
+        sourceId: boardUrl,
+        version: WF_VERSION,
+        itemId: wfCommentsItem(cardId),
+      });
+    },
+    async listCustomFields(env: WorkflowEnv, boardUrl: string): Promise<CustomFieldDef[]> {
+      return ttlCached<CustomFieldDef[]>(boardUrl, WF_CUSTOM_FIELDS_ITEM, () =>
+        adapter.listCustomFields(env, boardUrl)
+      );
+    },
+  };
+}
