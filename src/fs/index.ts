@@ -9,15 +9,21 @@
 // file is just the wiring. Per Adam's foundation framing
 // (2026-05-23): "specific cache == cache + specific source".
 //
-// On top of the adapter it adds `grepSource`: a *cold* whole-tree
-// search. The pure root `grep` only sees content already pulled into
-// the store; `grepSource` enumerates the whole source, pulls every
-// text file into the store in parallel (warming it), then greps the
-// warm cache — owned end to end, no external scanner process.
+// On top of the adapter it adds cold whole-source operations. The
+// pure root `grep` / `findSymbols` only see content already pulled
+// into the store; `warmSource` pulls a whole tree in so those
+// operations work cold. `grepSource` bundles warm + grep.
 
 import { fs as rawFs } from '@verevoir/sources/fs';
 import type { SourceEnv } from '@verevoir/sources';
-import { wrapWithCache, grep, contextStore, type GrepHit, type GrepOptions } from '../index.js';
+import {
+  wrapWithCache,
+  grep,
+  contextStore,
+  type ContextStore,
+  type GrepHit,
+  type GrepOptions,
+} from '../index.js';
 
 export const fs = wrapWithCache(rawFs);
 
@@ -32,7 +38,7 @@ export const openPullRequest = fs.openPullRequest.bind(fs);
 export const getDefaultBranch = fs.getDefaultBranch.bind(fs);
 
 // ============================================================
-// Cold grep — scan the whole source on demand, warming the store
+// Cold whole-source operations — pull the tree in, then search
 // ============================================================
 
 /** Files larger than this are skipped — too big to be worth pulling
@@ -50,29 +56,32 @@ function looksBinary(content: string): boolean {
   return false;
 }
 
-/** Cold grep over a local source. Where the pure `grep` searches only
- * what `readFile` has already pulled into the store, this fans out to
- * the filesystem: it enumerates the whole tree via `getRepoTree`
- * (which already skips vendored / build dirs), reads every text file
- * into the `ContextStore` *in parallel* — warming it so subsequent
- * `readFile` / `grep` / `find_symbol` are cache hits — then runs the
- * pure `grep` over the now-warm cache for consistent, formatted hits.
+export interface WarmSourceOptions {
+  /** Store to warm. Defaults to the module's singleton. */
+  store?: ContextStore;
+}
+
+/** Pull a whole local source into the `ContextStore`. Enumerates the
+ * tree via `getRepoTree` (which already skips vendored / build dirs),
+ * then reads every in-bounds text file into the store *in parallel*
+ * (`fsPromises.readFile` funnels through libuv's threadpool, so the
+ * awaits overlap without unbounded fd use). Binary (NUL-byte) and
+ * oversized files are skipped; already-warm entries are left alone.
  *
- * No external process: the walk, the reads, and the match are all
- * owned here. `sourceUrl` is the absolute root path (the fs adapter's
- * `repoUrl`). */
-export async function grepSource(
+ * This is the cold-search primitive: once warm, the pure cache-only
+ * operations work across the whole source —
+ *   - `grep` (root) for text  (also bundled as `grepSource`), and
+ *   - `findSymbols` (`@verevoir/context/code`) for symbol definitions
+ *     (compose `await warmSource(...)` then `findSymbols(query, scope)`).
+ *
+ * `sourceUrl` is the absolute root path (the fs adapter's `repoUrl`). */
+export async function warmSource(
   env: SourceEnv,
   sourceUrl: string,
-  pattern: string,
-  options: GrepOptions = {}
-): Promise<GrepHit[]> {
+  options: WarmSourceOptions = {}
+): Promise<void> {
   const store = options.store ?? contextStore;
   const tree = await rawFs.getRepoTree(env, sourceUrl);
-
-  // Pull every (text, in-bounds) blob into the store at once.
-  // `fsPromises.readFile` funnels through libuv's threadpool, so the
-  // awaits overlap without unbounded fd use.
   await Promise.all(
     tree.entries.map(async (entry) => {
       if (entry.type !== 'blob') return;
@@ -88,6 +97,18 @@ export async function grepSource(
       }
     })
   );
+}
 
+/** Cold grep over a local source: `warmSource` the whole tree, then
+ * run the pure `grep` over the now-warm cache for consistent,
+ * formatted hits. Owned end to end — no external scanner process. */
+export async function grepSource(
+  env: SourceEnv,
+  sourceUrl: string,
+  pattern: string,
+  options: GrepOptions = {}
+): Promise<GrepHit[]> {
+  const store = options.store ?? contextStore;
+  await warmSource(env, sourceUrl, { store });
   return grep(pattern, { sources: [{ sourceId: sourceUrl, version: '' }] }, { ...options, store });
 }

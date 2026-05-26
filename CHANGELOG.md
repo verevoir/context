@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 — 2026-05-26
+
+- **New: `warmSource` in `@verevoir/context/fs`** — the cold-search primitive extracted from `grepSource`. Pulls a whole local source into the `ContextStore` (enumerate via `getRepoTree`, parallel-read every in-bounds text file, skipping binary + oversized), so any pure cache-only operation then works across the whole source. Cold **symbol** search composes it: `await warmSource(...)` then `findSymbols(query, scope)` from `@verevoir/context/code` (which lazily tree-sitter-parses the warmed content). `grepSource` is now `warmSource` + `grep`. Kept out of the bundled API on `/fs` so the lean fs subpath doesn't pull in tree-sitter — the composition is the consumer's. (STDIO-83, find_symbol slice.)
+
 ## 0.5.0 — 2026-05-26
 
 - **New: `grepSource` in `@verevoir/context/fs`** — cold whole-tree search. Where the pure root `grep` only sees content already pulled into the store, `grepSource` enumerates the source via `getRepoTree` (which already skips vendored / build dirs), pulls every in-bounds text file into the `ContextStore` in parallel — warming it for later `readFile` / `grep` / `find_symbol` — then runs the pure `grep` over the warm cache. Binary (NUL-byte) and oversized files are skipped. Owned end to end in Node: no external scanner process, no `PATH` dependence. (STDIO-83, fs slice.)
