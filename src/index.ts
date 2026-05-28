@@ -427,6 +427,18 @@ export function wrapWithCache(
       // downstream find_symbol re-parses on the next query.
       const key = { sourceId: sourceUrl, version: branch, itemId: path };
       store.setContent(key, content, '', now);
+      // A no-ref read keys version '' — the "default branch" sentinel.
+      // If this write targets the default branch, that '' entry now
+      // holds pre-write content; left alone, a no-ref read inside the
+      // validation TTL would serve it stale. The cache can't tell
+      // whether `branch` is the default without resolving it, so drop
+      // the '' alias unconditionally. Cost is at most one extra fetch
+      // on the next no-ref read after a non-default-branch write; the
+      // payoff is never serving stale content. (Skip when branch is
+      // itself '' — that's the slot we just populated.)
+      if (branch !== '') {
+        store.invalidateItem({ sourceId: sourceUrl, version: '', itemId: path });
+      }
     },
     async ensureBranch(env: SourceEnv, sourceUrl: string, branch: string): Promise<void> {
       return source.ensureBranch(env, sourceUrl, branch);
