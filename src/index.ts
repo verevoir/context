@@ -473,6 +473,72 @@ function looksBinary(content: string): boolean {
   return false;
 }
 
+/** Default `include` for warming — every file. The `exclude` list does
+ * the filtering; `include` is the positive scope — narrow it to warm
+ * only certain file types when you want a leaner index. */
+export const DEFAULT_WARM_INCLUDE: readonly string[] = ['**'];
+
+/** Default `exclude` for warming — paths never worth pulling into a
+ * search index: dependency trees, VCS internals, tool output /
+ * coverage, and minified bundles. Deliberately excludes `dist` /
+ * `build` / `out`, which are legitimately committed source-output in
+ * some repos and should stay searchable; auto-respecting a source's
+ * own `.gitignore` is a separate, deeper concern. Override per call via
+ * `WarmSourceOptions.exclude`. */
+export const DEFAULT_WARM_EXCLUDE: readonly string[] = [
+  '**/node_modules/**',
+  '**/.git/**',
+  '**/coverage/**',
+  '**/.nyc_output/**',
+  '**/.next/**',
+  '**/.turbo/**',
+  '**/.svelte-kit/**',
+  '**/.cache/**',
+  '**/*.min.js',
+  '**/*.min.css',
+];
+
+/** Compile a glob to a RegExp over POSIX-style ('/'-separated) paths.
+ * Supports the subset we need:
+ *   - `**` — any number of path segments, including zero
+ *   - `*`  — any run of non-`/` characters within a single segment
+ *   - `?`  — exactly one non-`/` character
+ * Everything else matches literally. Braces, negation, and character
+ * classes are intentionally unsupported — reach for a real glob
+ * library before growing this. */
+function globToRegExp(glob: string): RegExp {
+  let re = '';
+  let i = 0;
+  while (i < glob.length) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      i += 2;
+      if (glob[i] === '/') {
+        // `**/` — zero or more whole path segments.
+        i++;
+        re += '(?:[^/]+/)*';
+      } else {
+        re += '.*';
+      }
+    } else if (c === '*') {
+      re += '[^/]*';
+      i++;
+    } else if (c === '?') {
+      re += '[^/]';
+      i++;
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      i++;
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** True if `path` matches at least one of `globs`. */
+function matchesAnyGlob(path: string, globs: readonly string[]): boolean {
+  return globs.some((g) => globToRegExp(g).test(path));
+}
+
 export interface WarmSourceOptions {
   /** Store to warm. Defaults to the module's singleton. */
   store?: ContextStore;
@@ -482,6 +548,16 @@ export interface WarmSourceOptions {
   ref?: string;
   /** Max concurrent file reads. Default 8. */
   concurrency?: number;
+  /** Glob patterns selecting which files to warm — a file is warmed
+   * only if it matches at least one. Defaults to `DEFAULT_WARM_INCLUDE`
+   * (`['**']`, i.e. everything). Supports `**` / `*` / `?`. */
+  include?: readonly string[];
+  /** Glob patterns to skip — a file is dropped if it matches any, even
+   * when `include` matched. Defaults to `DEFAULT_WARM_EXCLUDE`
+   * (dependency trees, VCS internals, tool output, minified bundles).
+   * Extend with `[...DEFAULT_WARM_EXCLUDE, '**' + '/*.snap']`, replace
+   * wholesale, or pass `[]` to warm everything `include` matched. */
+  exclude?: readonly string[];
 }
 
 /** Pull a whole file-source into the `ContextStore` — *the* cache-
@@ -503,9 +579,14 @@ export async function warmSource(
   const version = ref ?? '';
   const concurrency = options.concurrency ?? DEFAULT_WARM_CONCURRENCY;
 
+  const include = options.include ?? DEFAULT_WARM_INCLUDE;
+  const exclude = options.exclude ?? DEFAULT_WARM_EXCLUDE;
+  const wanted = (p: string): boolean => matchesAnyGlob(p, include) && !matchesAnyGlob(p, exclude);
+
   const tree = await adapter.getRepoTree(env, sourceUrl, ref);
   const blobs = tree.entries.filter(
-    (e) => e.type === 'blob' && !(e.size !== undefined && e.size > MAX_WARM_FILE_BYTES)
+    (e) =>
+      e.type === 'blob' && wanted(e.path) && !(e.size !== undefined && e.size > MAX_WARM_FILE_BYTES)
   );
 
   let next = 0;
