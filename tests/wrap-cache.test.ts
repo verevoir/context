@@ -279,6 +279,39 @@ describe('wrapWithCache — writeFile', () => {
     expect(r.content).toBe('fresh content');
     expect(methods.readFile).not.toHaveBeenCalled();
   });
+
+  it('drops the no-ref slot on write, so a write-then-no-ref-read re-fetches instead of serving the stale default-branch entry', async () => {
+    const { adapter, methods } = makeStub();
+    methods.writeFile.mockResolvedValue(undefined);
+    // A no-ref read keys version '' (the default-branch sentinel).
+    // The first read sees the pre-write content; once the write lands,
+    // the source returns the new content.
+    methods.readFile
+      .mockResolvedValueOnce({ content: 'old', sha: 'sha-old' })
+      .mockResolvedValueOnce({ content: 'new', sha: 'sha-new' });
+    let clock = 1_000_000;
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: 10_000,
+      now: () => clock,
+    });
+
+    // 1. No-ref read populates the '' slot with 'old'.
+    expect((await cached.readFile(ENV, URL, 'a.md')).content).toBe('old');
+
+    // 2. Write to the default branch.
+    await cached.writeFile(ENV, URL, 'a.md', 'new', 'main', 'msg');
+
+    // 3. No-ref read *inside* the grace window. Without the alias drop
+    //    the stale '' slot is served with no isFresh check; with it the
+    //    write invalidated '', so we re-fetch and get 'new'.
+    clock += 1_000; // well within the 10s TTL
+    const second = await cached.readFile(ENV, URL, 'a.md');
+
+    expect(second.content).toBe('new');
+    expect(second.sha).toBe('sha-new');
+    expect(methods.readFile).toHaveBeenCalledTimes(2); // re-fetched, not stale-served
+  });
 });
 
 describe('wrapWithCache — pass-throughs', () => {
