@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { warmSource, grepSource, createContextStore, type ContextStore } from '../src/index.js';
+import {
+  warmSource,
+  grepSource,
+  createContextStore,
+  DEFAULT_WARM_EXCLUDE,
+  type ContextStore,
+} from '../src/index.js';
 import type { SourceAdapter, ReadFileResult, RepoTree, TreeEntry } from '@verevoir/sources';
 
 /** `warmSource` is the one cache-warming mechanism for every file
@@ -111,5 +117,63 @@ describe('warmSource (generic, adapter-driven)', () => {
 
     expect(maxInFlight).toBeLessThanOrEqual(3);
     expect(maxInFlight).toBeGreaterThan(1); // genuinely overlapped, not serial
+  });
+
+  it('skips dependency / VCS / tool-output dirs by default, keeps committed output', async () => {
+    const adapter = mockAdapter({
+      'src/a.ts': { content: 'needle in source' },
+      'node_modules/dep/index.js': { content: 'needle in a dependency' },
+      'coverage/lcov-report/index.html': { content: 'needle in coverage' },
+      '.git/COMMIT_EDITMSG': { content: 'needle in git' },
+      'dist/a.js': { content: 'needle in committed dist' },
+    });
+
+    const hits = await grepSource(adapter, ENV, URL, 'needle', { store });
+
+    // node_modules / coverage / .git skipped; source + committed dist kept
+    expect(hits.map((h) => h.itemId).sort()).toEqual(['dist/a.js', 'src/a.ts']);
+    expect(
+      store.getContent({ sourceId: URL, version: '', itemId: 'coverage/lcov-report/index.html' })
+    ).toBeUndefined();
+  });
+
+  it('exclude globs are overridable — extend the default, or disable with []', async () => {
+    const files = {
+      'src/a.ts': { content: 'needle' },
+      'generated/x.ts': { content: 'needle' },
+    };
+
+    const extended = createContextStore();
+    const extendedHits = await grepSource(mockAdapter(files), ENV, URL, 'needle', {
+      store: extended,
+      exclude: [...DEFAULT_WARM_EXCLUDE, '**/generated/**'],
+    });
+    expect(extendedHits.map((h) => h.itemId)).toEqual(['src/a.ts']);
+
+    const all = createContextStore();
+    const allHits = await grepSource(
+      mockAdapter({ 'node_modules/d.js': { content: 'needle' } }),
+      ENV,
+      URL,
+      'needle',
+      { store: all, exclude: [] }
+    );
+    expect(allHits.map((h) => h.itemId)).toEqual(['node_modules/d.js']);
+  });
+
+  it('include narrows the positive scope (cross-segment globs)', async () => {
+    const store2 = createContextStore();
+    const hits = await grepSource(
+      mockAdapter({
+        'src/a.ts': { content: 'needle' },
+        'src/b.md': { content: 'needle' },
+        'src/deep/c.ts': { content: 'needle' },
+      }),
+      ENV,
+      URL,
+      'needle',
+      { store: store2, include: ['**/*.ts'] }
+    );
+    expect(hits.map((h) => h.itemId).sort()).toEqual(['src/a.ts', 'src/deep/c.ts']);
   });
 });
