@@ -25,6 +25,41 @@
  * also populate from their own parsers. */
 export type SymbolKind = 'function' | 'class' | 'method' | 'interface' | 'type' | 'enum';
 
+// ============================================================
+// Code-graph edge types (import + call edges)
+// ============================================================
+
+/** One `import … from '…'` statement in a source file. */
+export interface ImportEdge {
+  /** Module specifier string (e.g. `'./auth.js'`, `'react'`). */
+  module: string;
+  /** Imported identifiers: named bindings, the default import name,
+   * and namespace alias (`* as X`). Empty for bare side-effect
+   * imports (`import './polyfill'`). */
+  names: string[];
+  /** 1-indexed line of the import statement. */
+  line: number;
+}
+
+/** One call site inside a source file. Name-based, no type
+ * resolution — approximate is expected and fine. */
+export interface CallEdge {
+  /** Name of the enclosing symbol (function / method / class), or
+   * `null` when the call is at module top-level. */
+  from: string | null;
+  /** Bare callee name. For member calls (`a.b()`) this is the
+   * property name (`b`); for plain calls it is the identifier. */
+  to: string;
+  /** 1-indexed line of the call expression. */
+  line: number;
+}
+
+/** The full set of import + call edges extracted from one source file. */
+export interface CodeEdges {
+  imports: ImportEdge[];
+  calls: CallEdge[];
+}
+
 export interface SymbolEntry {
   /** Bare identifier — `AuthHandler`, not `class AuthHandler`. */
   name: string;
@@ -98,14 +133,16 @@ export interface ContextStore {
   setContent(key: IndexKey, content: string, version?: string, now?: () => number): void;
   getSymbols(key: IndexKey): SymbolEntry[] | undefined;
   setSymbols(key: IndexKey, entries: SymbolEntry[]): void;
+  getEdges(key: IndexKey): CodeEdges | undefined;
+  setEdges(key: IndexKey, edges: CodeEdges): void;
   /** Refreshes the `cachedAt` timestamp on an existing entry
    * without touching content or version. `wrapWithCache` calls this
    * after a successful `isFresh` check so the next read can serve
    * from cache without re-checking. No-op when the entry is absent. */
   touch(key: IndexKey, now?: () => number): void;
-  /** Drop both content and symbols for one item. */
+  /** Drop content, symbols, and edges for one item. */
   invalidateItem(key: IndexKey): void;
-  /** Drop every entry (content + symbols) for one
+  /** Drop every entry (content + symbols + edges) for one
    * `(sourceId, version)` — used when a commit lands on the ref,
    * or an etag changes. */
   invalidateVersion(sourceId: string, version: string): void;
@@ -128,8 +165,9 @@ interface StoreSnapshot {
   v: number;
   contents: Array<[string, CachedContent]>;
   symbols: Array<[string, SymbolEntry[]]>;
+  edges: Array<[string, CodeEdges]>;
 }
-const SNAPSHOT_VERSION = 1;
+const SNAPSHOT_VERSION = 2;
 
 export interface CreateContextStoreOptions {
   /** Restore from a prior `serialize()` snapshot. Malformed input or a
@@ -141,6 +179,7 @@ export interface CreateContextStoreOptions {
 export function createContextStore(options: CreateContextStoreOptions = {}): ContextStore {
   const contents = new Map<string, CachedContent>();
   const symbols = new Map<string, SymbolEntry[]>();
+  const edges = new Map<string, CodeEdges>();
 
   if (options.serialized !== undefined) {
     try {
@@ -148,6 +187,7 @@ export function createContextStore(options: CreateContextStoreOptions = {}): Con
       if (snap && snap.v === SNAPSHOT_VERSION) {
         for (const [k, v] of snap.contents ?? []) contents.set(k, v);
         for (const [k, v] of snap.symbols ?? []) symbols.set(k, v);
+        for (const [k, v] of snap.edges ?? []) edges.set(k, v);
       }
     } catch {
       // Malformed snapshot → cold start (empty store).
@@ -164,16 +204,23 @@ export function createContextStore(options: CreateContextStoreOptions = {}): Con
     setContent(key, content, version = '', now = Date.now) {
       const k = flatKey(key);
       contents.set(k, { content, version, cachedAt: now() });
-      // Content changed → any cached symbols for this item are
-      // stale; drop them. The next getSymbols miss tells the
-      // caller to re-parse.
+      // Content changed → any cached symbols and edges for this
+      // item are stale; drop them. The next getSymbols / getEdges
+      // miss tells the caller to re-parse.
       symbols.delete(k);
+      edges.delete(k);
     },
     getSymbols(key) {
       return symbols.get(flatKey(key));
     },
     setSymbols(key, entries) {
       symbols.set(flatKey(key), entries);
+    },
+    getEdges(key) {
+      return edges.get(flatKey(key));
+    },
+    setEdges(key, codeEdges) {
+      edges.set(flatKey(key), codeEdges);
     },
     touch(key, now = Date.now) {
       const k = flatKey(key);
@@ -186,6 +233,7 @@ export function createContextStore(options: CreateContextStoreOptions = {}): Con
       const k = flatKey(key);
       contents.delete(k);
       symbols.delete(k);
+      edges.delete(k);
     },
     invalidateVersion(sourceId, version) {
       const prefix = versionPrefix(sourceId, version);
@@ -194,6 +242,9 @@ export function createContextStore(options: CreateContextStoreOptions = {}): Con
       }
       for (const k of symbols.keys()) {
         if (k.startsWith(prefix)) symbols.delete(k);
+      }
+      for (const k of edges.keys()) {
+        if (k.startsWith(prefix)) edges.delete(k);
       }
     },
     listIndexedItems(sourceId, version) {
@@ -209,12 +260,14 @@ export function createContextStore(options: CreateContextStoreOptions = {}): Con
     clearAll() {
       contents.clear();
       symbols.clear();
+      edges.clear();
     },
     serialize() {
       const snap: StoreSnapshot = {
         v: SNAPSHOT_VERSION,
         contents: [...contents.entries()],
         symbols: [...symbols.entries()],
+        edges: [...edges.entries()],
       };
       return JSON.stringify(snap);
     },

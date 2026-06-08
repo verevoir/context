@@ -1,6 +1,6 @@
 {
   "name": "@verevoir/context",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "In-process content + symbol cache for LLM context windows. Keyed (source, version, item). Tree-sitter symbol extraction + grep + cached-read bridge as subpath imports.",
   "license": "Apache-2.0",
   "type": "module",

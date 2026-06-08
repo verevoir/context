@@ -27,7 +27,12 @@ import {
   type ContextStore,
   type SymbolEntry,
   type SymbolKind,
+  type CodeEdges,
+  type ImportEdge,
+  type CallEdge,
 } from '../index.js';
+
+export type { CodeEdges, ImportEdge, CallEdge } from '../index.js';
 
 export type SupportedLanguage = 'typescript' | 'tsx' | 'javascript';
 
@@ -77,29 +82,50 @@ export function detectLanguage(itemId: string): SupportedLanguage | null {
   return null;
 }
 
-/** Walk the tree-sitter AST and pull out top-level + class-method
- * symbol declarations. Nested function declarations inside other
- * functions are skipped — they're not meaningful index entries at
- * v0; the outer symbol's name suffices to locate them.
+/** Parse source once and extract both symbols and code-graph edges.
  *
- * Anonymous functions (function expressions / arrow functions
- * without a binding name) are also skipped — they're not retrievable
- * by `findSymbols(name)`. Named function expressions assigned to
- * `const X = function () {...}` are captured under `X` via the
- * variable-declarator branch. */
-export function parseSymbols(language: SupportedLanguage, source: string): SymbolEntry[] {
+ * Symbols: top-level + class-method declarations (same rules as the
+ * original `parseSymbols`; nested function bodies are skipped).
+ *
+ * Edges:
+ * - imports: every `import_statement` → module specifier + the set
+ *   of locally-bound names (default, named, namespace).
+ * - calls: every `call_expression` found anywhere in the full tree
+ *   (including inside function bodies). Callee resolution is
+ *   name-based only — no type resolution (approximate is expected).
+ *   The enclosing symbol is tracked via a push/pop stack so each
+ *   `CallEdge.from` names the immediately-enclosing declaration, or
+ *   `null` for module top-level calls. */
+export function parseCode(
+  language: SupportedLanguage,
+  source: string
+): { symbols: SymbolEntry[]; edges: CodeEdges } {
   const parser = getParser();
   parser.setLanguage(LANGUAGES[language] as Parameters<Parser['setLanguage']>[0]);
   const tree = parser.parse(source);
-  const entries: SymbolEntry[] = [];
-  walk(tree.rootNode, entries, source);
-  return entries;
+
+  const symbols: SymbolEntry[] = [];
+  walk(tree.rootNode, symbols, source);
+
+  const imports: ImportEdge[] = [];
+  const calls: CallEdge[] = [];
+  walkEdges(tree.rootNode, imports, calls, null);
+
+  return { symbols, edges: { imports, calls } };
+}
+
+/** Convenience wrapper — identical output to the original contract.
+ * Delegates to `parseCode` so callers that already use `parseSymbols`
+ * continue working without any changes. */
+export function parseSymbols(language: SupportedLanguage, source: string): SymbolEntry[] {
+  return parseCode(language, source).symbols;
 }
 
 interface TSNode {
   type: string;
   children: TSNode[];
   namedChildren: TSNode[];
+  parent: TSNode | null;
   startPosition: { row: number; column: number };
   endPosition: { row: number; column: number };
   text: string;
@@ -156,6 +182,165 @@ function extractName(node: TSNode, kind: SymbolKind): string | null {
     if (first && first.type === 'property_identifier') return first.text;
   }
   return null;
+}
+
+// ============================================================
+// walkEdges — import + call edge extraction over the full tree
+// ============================================================
+
+/** Node types that introduce a named enclosing scope for call-edge
+ * `from` tracking. These are the same declarations the symbol walk
+ * captures, plus the variable-declarator pattern for named arrow /
+ * function expressions. */
+const SCOPE_NODE_TYPES = new Set([
+  'function_declaration',
+  'method_definition',
+  'class_declaration',
+  'function_expression',
+  'arrow_function',
+]);
+
+/** Resolve the enclosing-symbol name when entering a node that starts
+ * a new scope. Returns the name string if determinable, otherwise
+ * `null` (anonymous function — doesn't change the tracking context). */
+function scopeName(node: TSNode): string | null {
+  // Named function/method/class declarations carry a `name` field.
+  const nameField = node.childForFieldName('name');
+  if (nameField) return nameField.text;
+  // `const X = () => {}` / `const X = function() {}` — the name is
+  // on the parent variable_declarator, not on the arrow/function
+  // itself. Walk up one level if the parent is a variable_declarator.
+  if (node.parent && node.parent.type === 'variable_declarator') {
+    const parentName = node.parent.childForFieldName('name');
+    if (parentName) return parentName.text;
+  }
+  return null;
+}
+
+/** Resolve the callee name from the `function` field of a
+ * `call_expression`. Returns:
+ * - `identifier.text` for plain calls (`foo()`)
+ * - property name for member calls (`obj.foo()`, `this.foo()`)
+ * - `null` for anything else (e.g. computed `obj[key]()`) */
+function calleeName(callNode: TSNode): string | null {
+  const fn = callNode.childForFieldName('function');
+  if (!fn) return null;
+  if (fn.type === 'identifier') return fn.text;
+  if (fn.type === 'member_expression') {
+    const prop = fn.childForFieldName('property');
+    if (prop) return prop.text;
+  }
+  return null;
+}
+
+/** Walk the full tree to collect import edges and call edges.
+ * `enclosingSymbol` is the name of the immediately-enclosing
+ * declared symbol, or `null` at module top-level. The stack is
+ * implemented via the call-stack (recursive DFS with scope tracking
+ * passed down as a parameter). */
+function walkEdges(
+  node: TSNode,
+  imports: ImportEdge[],
+  calls: CallEdge[],
+  enclosingSymbol: string | null
+): void {
+  // ── Import statements ──────────────────────────────────────────
+  if (node.type === 'import_statement') {
+    const moduleNode = node.childForFieldName('source');
+    const module = moduleNode ? stripQuotes(moduleNode.text) : '';
+    const names: string[] = [];
+    // Walk named children to find import clause → named/default/namespace imports.
+    for (const child of node.namedChildren) {
+      collectImportNames(child, names);
+    }
+    imports.push({ module, names, line: node.startPosition.row + 1 });
+    // No further descent needed — import statements don't contain calls.
+    return;
+  }
+
+  // ── Call expressions ───────────────────────────────────────────
+  if (node.type === 'call_expression') {
+    const callee = calleeName(node);
+    if (callee) {
+      calls.push({
+        from: enclosingSymbol,
+        to: callee,
+        line: node.startPosition.row + 1,
+      });
+    }
+    // Continue descent — calls can nest (e.g. `foo(bar())`).
+  }
+
+  // ── Scope-introducing nodes ────────────────────────────────────
+  let nextEnclosing = enclosingSymbol;
+  if (SCOPE_NODE_TYPES.has(node.type)) {
+    const name = scopeName(node);
+    if (name !== null) {
+      nextEnclosing = name;
+    }
+    // Anonymous function expression / arrow → enclosing unchanged.
+  }
+
+  for (const child of node.namedChildren) {
+    walkEdges(child, imports, calls, nextEnclosing);
+  }
+}
+
+/** Strip the surrounding quote characters from a string literal's
+ * text (tree-sitter includes them). Handles single, double, and
+ * backtick quotes. */
+function stripQuotes(text: string): string {
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text[text.length - 1];
+    if (
+      (first === '"' && last === '"') ||
+      (first === "'" && last === "'") ||
+      (first === '`' && last === '`')
+    ) {
+      return text.slice(1, -1);
+    }
+  }
+  return text;
+}
+
+/** Recursively collect imported names from an import clause node.
+ * Handles: default identifier, named imports, namespace (`* as X`). */
+function collectImportNames(node: TSNode, out: string[]): void {
+  switch (node.type) {
+    case 'identifier':
+      // Default import: `import Foo from '...'` — identifier directly
+      // under import_clause.
+      out.push(node.text);
+      break;
+    case 'namespace_import': {
+      // `* as X` — the alias is the first named child (an identifier).
+      const alias = node.namedChildren[0];
+      if (alias && alias.type === 'identifier') out.push(alias.text);
+      break;
+    }
+    case 'named_imports':
+      // `{ a, b as c }` — each child is an import_specifier.
+      for (const child of node.namedChildren) {
+        collectImportNames(child, out);
+      }
+      break;
+    case 'import_specifier': {
+      // The locally-bound name is the `alias` field if present, else `name`.
+      const alias = node.childForFieldName('alias');
+      const name = alias ?? node.childForFieldName('name');
+      if (name) out.push(name.text);
+      break;
+    }
+    case 'import_clause':
+      // Container; recurse into children.
+      for (const child of node.namedChildren) {
+        collectImportNames(child, out);
+      }
+      break;
+    default:
+      break;
+  }
 }
 
 // ============================================================
@@ -258,4 +443,37 @@ function symbolsForItem(
   const symbols = parseSymbols(language, content);
   store.setSymbols(key, symbols);
   return symbols;
+}
+
+/** Get the code-graph edges for a `(sourceId, version, itemId)`,
+ * lazily parsing on miss. Mirrors `symbolsForItem` — same cache-miss
+ * fallback pattern.
+ *
+ * Returns an empty `{ imports: [], calls: [] }` for non-code items
+ * (no language detected) — a deterministic answer callers don't need
+ * to special-case. Caches the empty result so language-detect runs
+ * once per item, not on every call.
+ *
+ * Returns `null` when the item has no cached content at all; callers
+ * should treat this as "not indexed yet". */
+export function edgesForItem(
+  store: ContextStore,
+  sourceId: string,
+  version: string,
+  itemId: string
+): CodeEdges | null {
+  const key = { sourceId, version, itemId };
+  const cached = store.getEdges(key);
+  if (cached) return cached;
+  const content = store.getContent(key);
+  if (content === undefined) return null;
+  const language = detectLanguage(itemId);
+  if (!language) {
+    const empty: CodeEdges = { imports: [], calls: [] };
+    store.setEdges(key, empty);
+    return empty;
+  }
+  const { edges } = parseCode(language, content);
+  store.setEdges(key, edges);
+  return edges;
 }
