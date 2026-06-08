@@ -642,7 +642,14 @@ export function parseCode(
   const cfg = LANG_CONFIGS[language];
   const parser = getParser();
   parser.setLanguage(cfg.grammar as Parameters<Parser['setLanguage']>[0]);
-  const tree = parser.parse(source);
+  // node-tree-sitter reads the source through a chunk callback bounded by
+  // `bufferSize` (default ~32KB). Its string path returns the whole
+  // remainder in one chunk, so any source over the default throws
+  // "Invalid argument" rather than chunking. Size the buffer to the
+  // content (UTF-8 bytes) so files of any size parse in one read.
+  const tree = parser.parse(source, undefined, {
+    bufferSize: Buffer.byteLength(source, 'utf8') + 1024,
+  });
 
   const symbols: SymbolEntry[] = [];
   walk(tree.rootNode as unknown as TSNode, symbols, cfg, { insideType: false });
@@ -797,7 +804,14 @@ function symbolsForItem(
     store.setSymbols(key, []);
     return [];
   }
-  const symbols = parseSymbols(language, content);
+  // A single unparseable file must never crash a whole-source symbol
+  // search — degrade to "no symbols" and cache that so we don't retry.
+  let symbols: SymbolEntry[];
+  try {
+    symbols = parseSymbols(language, content);
+  } catch {
+    symbols = [];
+  }
   store.setSymbols(key, symbols);
   return symbols;
 }
@@ -822,7 +836,14 @@ export function edgesForItem(
     store.setEdges(key, empty);
     return empty;
   }
-  const { edges } = parseCode(language, content);
+  // As with symbols: one file's parse failure must not crash the
+  // whole code-graph build.
+  let edges: CodeEdges;
+  try {
+    edges = parseCode(language, content).edges;
+  } catch {
+    edges = { imports: [], calls: [] };
+  }
   store.setEdges(key, edges);
   return edges;
 }

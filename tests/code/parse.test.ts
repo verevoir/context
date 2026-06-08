@@ -185,3 +185,27 @@ export function alsoValid() { return 3; }
     expect(fnNames).toContain('alsoValid');
   });
 });
+
+describe('large sources (tree-sitter bufferSize)', () => {
+  it('parses a source far larger than the default ~32KB buffer', () => {
+    // node-tree-sitter throws "Invalid argument" for sources over the
+    // default buffer unless bufferSize is sized to the content.
+    const big = Array.from({ length: 4000 }, (_, i) => `function fn_${i}() { return ${i}; }`).join(
+      '\n'
+    );
+    expect(big.length).toBeGreaterThan(32768);
+    const fns = byKind(parseSymbols('typescript', big), 'function');
+    expect(fns).toHaveLength(4000);
+    expect(fns[0]).toBe('fn_0');
+    expect(fns[3999]).toBe('fn_3999');
+  });
+
+  it('parses a large Python source (the case that surfaced the bug)', () => {
+    const big =
+      'import os\n' +
+      Array.from({ length: 3000 }, (_, i) => `def py_fn_${i}(x):\n    return x\n`).join('\n');
+    expect(big.length).toBeGreaterThan(32768);
+    const fns = byKind(parseSymbols('python', big), 'function');
+    expect(fns.length).toBe(3000);
+  });
+});
