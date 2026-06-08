@@ -17,7 +17,7 @@ Direct in-process use (below) is for: writing your own MCP server, customising `
 ## Subpaths
 
 - `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, `wrapWorkflowWithCache` decorator over any `@verevoir/workflows` `WorkflowAdapter` (board reads share the same store, so they park/restore with `serialize()`), key + symbol types. No external dependencies. Optional peer dep on `@verevoir/workflows` (type-only unless `wrapWorkflowWithCache` is called).
-- `@verevoir/context/code` — tree-sitter `parseSymbols`, `detectLanguage`, `findSymbols` over the store. Optional peer deps on tree-sitter packages.
+- `@verevoir/context/code` — tree-sitter `parseCode` (symbols + import/call edges), `parseSymbols`, `detectLanguage`, `findSymbols` / `edgesForItem` over the store. Languages: TypeScript/TSX/JavaScript, Python, Java, C#, Go, Scala, C, C++. Optional peer deps on the tree-sitter grammar packages.
 - `@verevoir/context/github` — `wrapWithCache(github)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0`.
 - `@verevoir/context/fs` — `wrapWithCache(fs)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0`.
 - `@verevoir/context/notion` — `wrapWithCache(notion)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0` + transitively on `@notionhq/client`.
@@ -28,6 +28,7 @@ Direct in-process use (below) is for: writing your own MCP server, customising `
 npm install @verevoir/context
 # Optional add-ons:
 npm install tree-sitter tree-sitter-typescript tree-sitter-javascript
+# + any of: tree-sitter-python tree-sitter-java tree-sitter-c-sharp tree-sitter-go tree-sitter-scala tree-sitter-c tree-sitter-cpp
 npm install @verevoir/sources
 ```
 
