@@ -25,7 +25,8 @@ describe('detectLanguage', () => {
   it('returns null for unknown extensions', () => {
     expect(detectLanguage('Cargo.toml')).toBeNull();
     expect(detectLanguage('Dockerfile')).toBeNull();
-    expect(detectLanguage('src/main.py')).toBeNull();
+    expect(detectLanguage('src/main.rb')).toBeNull();
+    expect(detectLanguage('query.sql')).toBeNull();
   });
 });
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0 — 2026-06-08
+
+- **Multi-language code graph** (STDIO-313). `parseCode` / `parseSymbols` / `findSymbols` / `edgesForItem` now cover **Python, Java, C#, Go, Scala, C and C++** in addition to TypeScript/TSX/JavaScript. The parser is driven by a per-language `LanguageConfig` (symbol-kind map, scope nodes, call + member/attribute/selector resolution, import/using/include extraction), so the tree-sitter node-name divergence between grammars lives in one place — adding a language is one config entry plus a grammar dep. `detectLanguage` maps the new extensions (`.py`/`.pyi`, `.java`, `.cs`, `.go`, `.scala`/`.sc`, `.c`/`.h`, `.cpp`/`.cc`/`.cxx`/`.hpp`/…). The new grammars are optional peer deps; the runtime stays on `tree-sitter` 0.21.1. Kotlin is deferred — its community grammar fails to build on node 24 (STDIO-316).
+
+## 0.10.0 — 2026-06-07
+
+- **Code-graph edges** (STDIO-313). `parseCode` now returns import + call edges alongside symbols; `edgesForItem` lazily parses + caches them per item. `ContextStore` gains `getEdges` / `setEdges` / `listIndexedItems` and v2 serialization (edges park/restore with content + symbols). Call-edge `from` names the enclosing declaration; callee resolution is name-based (approximate, no type resolution). The foundation for the `code_graph` MCP tool.
+
 ## 0.9.1 — 2026-05-28
 
 - **Fix: `wrapWithCache` no longer serves a stale read after a write to the default branch** (STDIO-134). A no-ref `readFile` keys the cache under `version: ''` (the default-branch sentinel), but `writeFile` only wrote/invalidated under `version: branch` — so a write to the default branch followed by a no-ref read inside the validation TTL served the pre-write content with no `isFresh` check. `writeFile` now also drops the `''` alias for the path. The cache can't know whether `branch` is the default without resolving it, so the drop is unconditional: at most one extra fetch on the next no-ref read after a non-default-branch write, never a stale read. The `ref === branch` read-after-write optimisation is untouched.
