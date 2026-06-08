@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1 — 2026-06-08
+
+- **Fix: large files no longer crash symbol / graph search** (STDIO-313). node-tree-sitter's `parse()` reads the source through a chunk callback bounded by `bufferSize` (default ~32KB) and throws `Invalid argument` for any source larger than that — so a single file over ~32KB (common in real repos and vendored deps) crashed `find_symbol` / `code_graph` outright. It predates the multi-language work (large TS/JS files hit it too); a Python tree with vendored deps surfaced it. `parseCode` now sizes `bufferSize` to the source's UTF-8 byte length, and `symbolsForItem` / `edgesForItem` swallow a per-file parse failure (degrade to empty, cache it) so one unparseable file can never crash a whole-source search. Verified against a 3033-file tree: previously 30+ throws, now 0.
+
 ## 0.11.0 — 2026-06-08
 
 - **Multi-language code graph** (STDIO-313). `parseCode` / `parseSymbols` / `findSymbols` / `edgesForItem` now cover **Python, Java, C#, Go, Scala, C and C++** in addition to TypeScript/TSX/JavaScript. The parser is driven by a per-language `LanguageConfig` (symbol-kind map, scope nodes, call + member/attribute/selector resolution, import/using/include extraction), so the tree-sitter node-name divergence between grammars lives in one place — adding a language is one config entry plus a grammar dep. `detectLanguage` maps the new extensions (`.py`/`.pyi`, `.java`, `.cs`, `.go`, `.scala`/`.sc`, `.c`/`.h`, `.cpp`/`.cc`/`.cxx`/`.hpp`/…). The new grammars are optional peer deps; the runtime stays on `tree-sitter` 0.21.1. Kotlin is deferred — its community grammar fails to build on node 24 (STDIO-316).
