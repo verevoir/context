@@ -63,6 +63,15 @@ const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] }
 
 `store.getCached(key)` returns the full `{ content, version, cachedAt }` triple. `store.getContent(key)` returns just the content (used by `grep`).
 
+## Caching a workflow source
+
+`wrapWorkflowWithCache(adapter, { store?, validationTtlMs?, now? })` is the workflow twin of `wrapWithCache` — a `WorkflowAdapter`-shaped facade backed by the same `ContextStore`, so board state parks/restores with `serialize()` alongside file content.
+
+- `getCard` is read-through-with-validation: past the TTL window it validates the held `Card.lastActivity` via the adapter's `isCardFresh`.
+- The list reads (`listColumns` / `listCards` / `listComments` / `listCustomFields`) are TTL-only cached (no per-list freshness primitive); `listCards` is keyed per filter.
+- Writes pass through and invalidate the touched card plus the list views (or, for a comment write, the card's comments).
+- Cross-surface invalidation between a workflow cache and a source cache (e.g. a Notion DB-row write dropping the page's source entry) is a separate concern, not yet wired.
+
 ## Key shape
 
 ```ts
