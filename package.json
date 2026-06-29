@@ -1,6 +1,6 @@
 {
   "name": "@verevoir/context",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "In-process content + symbol cache for LLM context windows. Keyed (source, version, item). Tree-sitter symbol extraction + grep + cached-read bridge as subpath imports.",
   "license": "Apache-2.0",
   "type": "module",
@@ -102,7 +102,7 @@
   "devDependencies": {
     "@types/node": "^25.8.0",
     "@verevoir/sources": "^0.6.0",
-    "@verevoir/workflows": "^0.5.0",
+    "@verevoir/workflows": "^0.6.0",
     "prettier": "^3",
     "tree-sitter": "^0.21.1",
     "tree-sitter-c": "0.23.2",

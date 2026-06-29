@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1 — 2026-06-29
+
+- Publish the refreshed `llms.txt` surface — adds the `@verevoir/context/concept-network` subpath entry (current as of #19 but unpublished at 0.12.0).
+- Bump devDep `@verevoir/workflows` `^0.5.0` → `^0.6.0`, picking up 0.6.1 with the vite `server.fs.deny` security override.
+
 ## 0.12.0 — 2026-06-28
 
 - **New: `@verevoir/context/concept-network`** (STDIO-488) — v1 concept-link accumulator: the observation trail for differential ingestion (ADR 014 §7). Persists `ClaimRecord`s (concept mentions with mandatory provenance + timestamp) and `ConceptLink`s as append-only JSONL files; materialises an in-memory `ConceptGraph` on read with a derived, rebuildable JSON index (never canonical state). Provides recurrence counting weighted by source independence (independent-source count outweighs raw mention count) and temporal trail with structural supersession check (does a connecting `supersededBy` or labelled link record exist?). Two clean seam interfaces for the deferred semantic layers: `TopicMatcher` (baseline: `NormalisedKeyMatcher` — normalised-key exact grouping; deferred: embedding-based concept identity) and `TensionDetector` (baseline: `StructuralOnlyDetector` — always returns `false`; deferred: model-driven contradiction detection). Per-project partitioned (`storeRoot/<projectId>/`). Same primitive shape as `@verevoir/context/code`'s code graph, one domain over (concepts + relationships instead of symbols + relationships).
