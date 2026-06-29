@@ -1,6 +1,6 @@
 {
   "name": "@verevoir/context",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "In-process content + symbol cache for LLM context windows. Keyed (source, version, item). Tree-sitter symbol extraction + grep + cached-read bridge as subpath imports.",
   "license": "Apache-2.0",
   "type": "module",
@@ -26,6 +26,10 @@
     "./notion": {
       "types": "./dist/notion/index.d.ts",
       "import": "./dist/notion/index.js"
+    },
+    "./concept-network": {
+      "types": "./dist/concept-network/index.d.ts",
+      "import": "./dist/concept-network/index.js"
     }
   },
   "files": [
