@@ -21,6 +21,7 @@ Direct in-process use (below) is for: writing your own MCP server, customising `
 - `@verevoir/context/github` — `wrapWithCache(github)` drop-in, plus github bindings of `warmSource` / `grepSource` (cold grep + cold `find_symbol` over a whole repo). Optional peer dep on `@verevoir/sources@^0.4.0`.
 - `@verevoir/context/fs` — `wrapWithCache(fs)` drop-in, plus fs bindings of `warmSource` / `grepSource`. Optional peer dep on `@verevoir/sources@^0.4.0`.
 - `@verevoir/context/notion` — `wrapWithCache(notion)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0` + transitively on `@notionhq/client`.
+- `@verevoir/context/concept-network` — file-backed concept-link accumulator: claim/concept store with provenance + timestamps, a materialised-on-read graph, recurrence (weighted by source independence), and a time-ordered trail with pluggable `TopicMatcher` / `TensionDetector` seams. No runtime deps (Node `fs`/`path`).
 
 ## Install
 
