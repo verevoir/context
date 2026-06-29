@@ -16,11 +16,12 @@ Direct in-process use (below) is for: writing your own MCP server, customising `
 
 ## Subpaths
 
-- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, `wrapWorkflowWithCache` decorator over any `@verevoir/workflows` `WorkflowAdapter` (board reads share the same store, so they park/restore with `serialize()`), key + symbol types. No external dependencies. Optional peer dep on `@verevoir/workflows` (type-only unless `wrapWorkflowWithCache` is called).
+- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, `wrapWorkflowWithCache` decorator over any `@verevoir/workflows` `WorkflowAdapter` (board reads share the same store, so they park/restore with `serialize()`), the generic `warmSource(adapter, env, sourceUrl, options)` / `grepSource` cold-search primitives (enumerate via `getRepoTree`, parallel-read every in-bounds text file into the store, skipping binary + oversized; `WarmSourceOptions` = `store` / `ref` / `concurrency`, default 8), key + symbol types. No external dependencies. Optional peer dep on `@verevoir/workflows` (type-only unless `wrapWorkflowWithCache` is called).
 - `@verevoir/context/code` — tree-sitter `parseCode` (symbols + import/call edges), `parseSymbols`, `detectLanguage`, `findSymbols` / `edgesForItem` over the store. Languages: TypeScript/TSX/JavaScript, Python, Java, C#, Go, Scala, C, C++. Optional peer deps on the tree-sitter grammar packages.
-- `@verevoir/context/github` — `wrapWithCache(github)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0`.
-- `@verevoir/context/fs` — `wrapWithCache(fs)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0`.
+- `@verevoir/context/github` — `wrapWithCache(github)` drop-in, plus github bindings of `warmSource` / `grepSource` (cold grep + cold `find_symbol` over a whole repo). Optional peer dep on `@verevoir/sources@^0.4.0`.
+- `@verevoir/context/fs` — `wrapWithCache(fs)` drop-in, plus fs bindings of `warmSource` / `grepSource`. Optional peer dep on `@verevoir/sources@^0.4.0`.
 - `@verevoir/context/notion` — `wrapWithCache(notion)` drop-in. Optional peer dep on `@verevoir/sources@^0.4.0` + transitively on `@notionhq/client`.
+- `@verevoir/context/concept-network` — file-backed concept-link accumulator: claim/concept store with provenance + timestamps, a materialised-on-read graph, recurrence (weighted by source independence), and a time-ordered trail with pluggable `TopicMatcher` / `TensionDetector` seams. No runtime deps (Node `fs`/`path`).
 
 ## Install
 
@@ -62,6 +63,15 @@ const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] }
 - The 10s default covers a tool-loop's burst of correlated reads; it's a dial to tune from observed cost vs staleness.
 
 `store.getCached(key)` returns the full `{ content, version, cachedAt }` triple. `store.getContent(key)` returns just the content (used by `grep`).
+
+## Caching a workflow source
+
+`wrapWorkflowWithCache(adapter, { store?, validationTtlMs?, now? })` is the workflow twin of `wrapWithCache` — a `WorkflowAdapter`-shaped facade backed by the same `ContextStore`, so board state parks/restores with `serialize()` alongside file content.
+
+- `getCard` is read-through-with-validation: past the TTL window it validates the held `Card.lastActivity` via the adapter's `isCardFresh`.
+- The list reads (`listColumns` / `listCards` / `listComments` / `listCustomFields`) are TTL-only cached (no per-list freshness primitive); `listCards` is keyed per filter.
+- Writes pass through and invalidate the touched card plus the list views (or, for a comment write, the card's comments).
+- Cross-surface invalidation between a workflow cache and a source cache (e.g. a Notion DB-row write dropping the page's source entry) is a separate concern, not yet wired.
 
 ## Key shape
 
