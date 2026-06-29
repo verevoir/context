@@ -3,7 +3,7 @@
 ## 0.12.1 — 2026-06-29
 
 - Publish the refreshed `llms.txt` surface — adds the `@verevoir/context/concept-network` subpath entry (current as of #19 but unpublished at 0.12.0).
-- Bump devDep `@verevoir/workflows` `^0.5.0` → `^0.6.0`, picking up 0.6.1 with the vite `server.fs.deny` security override.
+- Bump `@verevoir/workflows` — devDep `^0.5.0` → `^0.6.1` and peer `*` → `^0.6.0` — picking up 0.6.1 with the vite `server.fs.deny` security override.
 
 ## 0.12.0 — 2026-06-28
 
