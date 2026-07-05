@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0 — 2026-07-05
+
+- **`wrapWithCache` covers `commitFiles`** (STDIO-543). The multi-file, atomically-committed twin of `writeFile` (added to the `SourceAdapter` contract in `@verevoir/sources@0.7.0`) now passes through the cache facade and applies the identical cache treatment to every file in the set: populate the just-written content under the `version: branch` key with an unknown (forced-stale) version so the next freshness check re-fetches the real sha, and drop the `version: ''` default-branch alias so a later no-ref read can't serve pre-commit content — the same dual-scope invariant `writeFile` holds (STDIO-134), now per file across the whole change-set. Bumps the `@verevoir/sources` dep to `^0.7.0` for the `commitFiles` contract.
+
 ## 0.12.1 — 2026-06-29
 
 - Publish the refreshed `llms.txt` surface — adds the `@verevoir/context/concept-network` subpath entry (current as of #19 but unpublished at 0.12.0).

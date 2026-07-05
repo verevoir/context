@@ -20,6 +20,7 @@ function makeStub(): { adapter: SourceAdapter; methods: Record<string, ReturnTyp
     getRepoTree: vi.fn<getRepoTreeFn>(),
     isFresh: vi.fn<isFreshFn>(),
     writeFile: vi.fn(),
+    commitFiles: vi.fn(),
     ensureBranch: vi.fn(),
     ensureFork: vi.fn(),
     openPullRequest: vi.fn(),
@@ -31,6 +32,7 @@ function makeStub(): { adapter: SourceAdapter; methods: Record<string, ReturnTyp
     getRepoTree: methods.getRepoTree,
     isFresh: methods.isFresh,
     writeFile: methods.writeFile,
+    commitFiles: methods.commitFiles,
     ensureBranch: methods.ensureBranch,
     ensureFork: methods.ensureFork,
     openPullRequest: methods.openPullRequest,
@@ -311,6 +313,69 @@ describe('wrapWithCache — writeFile', () => {
     expect(second.content).toBe('new');
     expect(second.sha).toBe('sha-new');
     expect(methods.readFile).toHaveBeenCalledTimes(2); // re-fetched, not stale-served
+  });
+});
+
+describe('wrapWithCache — commitFiles', () => {
+  it('passes through to the source and populates the cache for every committed file', async () => {
+    const { adapter, methods } = makeStub();
+    methods.commitFiles.mockResolvedValue(undefined);
+    methods.readFile.mockResolvedValue({ content: 'should-not-be-called', sha: '' });
+    const cached = wrapWithCache(adapter);
+
+    const files = [
+      { path: 'a.md', content: 'content-a' },
+      { path: 'sub/b.md', content: 'content-b' },
+    ];
+    await cached.commitFiles(ENV, URL, 'feature', files, 'msg');
+
+    expect(methods.commitFiles).toHaveBeenCalledWith(ENV, URL, 'feature', files, 'msg');
+    // Both files now serve from cache on the committed branch — the
+    // source is never re-read.
+    const a = await cached.readFile(ENV, URL, 'a.md', 'feature');
+    const b = await cached.readFile(ENV, URL, 'sub/b.md', 'feature');
+    expect(a.content).toBe('content-a');
+    expect(b.content).toBe('content-b');
+    expect(methods.readFile).not.toHaveBeenCalled();
+  });
+
+  it('drops the no-ref slot for each file, so a commit-then-no-ref-read re-fetches instead of serving stale', async () => {
+    const { adapter, methods } = makeStub();
+    methods.commitFiles.mockResolvedValue(undefined);
+    methods.readFile
+      .mockResolvedValueOnce({ content: 'old', sha: 'sha-old' })
+      .mockResolvedValueOnce({ content: 'new', sha: 'sha-new' });
+    let clock = 1_000_000;
+    const cached = wrapWithCache(adapter, {
+      store: createContextStore(),
+      validationTtlMs: 10_000,
+      now: () => clock,
+    });
+
+    // No-ref read populates the '' default-branch slot with 'old'.
+    expect((await cached.readFile(ENV, URL, 'a.md')).content).toBe('old');
+
+    // Commit to the default branch.
+    await cached.commitFiles(ENV, URL, 'main', [{ path: 'a.md', content: 'new' }], 'msg');
+
+    // No-ref read inside the grace window: the alias drop forces a
+    // re-fetch rather than serving the stale '' slot.
+    clock += 1_000;
+    const second = await cached.readFile(ENV, URL, 'a.md');
+    expect(second.content).toBe('new');
+    expect(methods.readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not populate the cache when the source commit fails (invariant not corrupted)', async () => {
+    const { adapter, methods } = makeStub();
+    methods.commitFiles.mockRejectedValue(new Error('commit failed'));
+    const store = createContextStore();
+    const cached = wrapWithCache(adapter, { store });
+
+    await expect(
+      cached.commitFiles(ENV, URL, 'feature', [{ path: 'a.md', content: 'x' }], 'msg')
+    ).rejects.toThrow('commit failed');
+    expect(store.getContent({ sourceId: URL, version: 'feature', itemId: 'a.md' })).toBeUndefined();
   });
 });
 
