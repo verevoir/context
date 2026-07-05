@@ -398,6 +398,10 @@ export interface WrapWithCacheOptions {
  *   known (writeFile is `Promise<void>`), so the cached entry has
  *   `version: ''` and is forced-stale on its next freshness check
  *   — readers re-fetch and pick up the real sha.
+ * - **`commitFiles`**: the multi-file twin of `writeFile` — passes
+ *   through, then applies the identical cache treatment to every
+ *   file in the set (populate forced-stale, drop the `''`
+ *   default-branch alias).
  * - **Other methods**: pure pass-throughs. The symbol cache and
  *   grep operate on what `readFile` has populated. Per-method
  *   caching (listFiles, getRepoTree) can layer in later if
@@ -491,6 +495,22 @@ export function wrapWithCache(
       // itself '' — that's the slot we just populated.)
       if (branch !== '') {
         store.invalidateItem({ sourceId: sourceUrl, version: '', itemId: path });
+      }
+    },
+    async commitFiles(
+      env: SourceEnv,
+      sourceUrl: string,
+      branch: string,
+      files: { path: string; content: string }[],
+      commitMessage: string
+    ): Promise<void> {
+      await source.commitFiles(env, sourceUrl, branch, files, commitMessage);
+      // Same cache treatment as writeFile, applied per committed file.
+      for (const { path, content } of files) {
+        store.setContent({ sourceId: sourceUrl, version: branch, itemId: path }, content, '', now);
+        if (branch !== '') {
+          store.invalidateItem({ sourceId: sourceUrl, version: '', itemId: path });
+        }
       }
     },
     async ensureBranch(env: SourceEnv, sourceUrl: string, branch: string): Promise<void> {
