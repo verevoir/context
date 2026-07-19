@@ -48,8 +48,13 @@ async function aggregate(
   }
 }
 
+// The aggregator emits its own line-start `::error` fail-closed messages, so the
+// oracle keys on the smuggled payloads: a panelist-authored command reaching a
+// line start (splitting on \r too — a raw CR is a line terminator to the runner).
 const startsWithCommand = (stdout: string) =>
-  stdout.split('\n').some((l) => l.startsWith('::add-mask'));
+  stdout
+    .split(/\r?\n|\r/)
+    .some((l) => /^::(add-mask|set-env|error title=Fake)/.test(l));
 
 describe('aggregate.sh — union the panel and gate on unanimous approval', () => {
   it('exits 0 and reports success when every lens APPROVES', async () => {
@@ -163,6 +168,32 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
       a: verdict('APPROVE'),
       b: verdict('REJECT', ['first line\n::add-mask::Y']),
     });
+    expect(startsWithCommand(stdout)).toBe(false);
+  });
+
+  it('neutralises a workflow-command smuggled through a carriage return — \\r is a runner line terminator sed alone never sees', async () => {
+    const { stdout } = await aggregate({
+      a: verdict('APPROVE'),
+      b: verdict('REJECT', ['benign\r::set-env name=X::pwned']),
+    });
+    expect(startsWithCommand(stdout)).toBe(false);
+    expect(stdout).not.toContain('\r::');
+  });
+
+  it('neutralises a workflow-command opening the summary field', async () => {
+    const { stdout } = await aggregate({
+      a: verdict('APPROVE'),
+      b: JSON.stringify({ verdict: 'REJECT', summary: '::error title=Fake::injected', findings: ['x'] }),
+    });
+    expect(startsWithCommand(stdout)).toBe(false);
+  });
+
+  it('percent-encodes panelist text so %0D/%0A escape smuggling dies at the source', async () => {
+    const { stdout } = await aggregate({
+      a: verdict('APPROVE'),
+      b: verdict('REJECT', ['try %0D::add-mask::Z smuggle']),
+    });
+    expect(stdout).toContain('%250D');
     expect(startsWithCommand(stdout)).toBe(false);
   });
 });

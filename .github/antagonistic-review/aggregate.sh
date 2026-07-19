@@ -25,7 +25,11 @@ esac
 
 # Neutralise a line-starting `::` in anything echoed from a verdict (which a
 # prompt-injected panelist controls), so it cannot emit a GitHub Actions workflow command.
-safe() { sed 's/^::/ ::/'; }
+# Neutralise GHA workflow-command injection from panelist-controlled text:
+# strip CR (a literal \r acts as a line terminator to the runner, letting
+# '::cmd' open a line sed's ^ never sees), %-encode (kills %0D/%0A escape
+# smuggling inside echoed values), then indent any line-start '::'.
+safe() { tr -d '\r' | sed -e 's/%/%25/g' -e 's/^::/ ::/'; }
 
 ok=1
 echo "## Antagonistic panel — verdict by lens"

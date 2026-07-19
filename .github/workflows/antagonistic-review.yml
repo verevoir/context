@@ -327,9 +327,9 @@ jobs:
       # `.antagonistic-review/verdict.json` in its own workspace; this uploads it as
       # artifact `verdict-<lens>`, which the aggregator later downloads to
       # `verdicts/verdict-<lens>/verdict.json` (same content, path differs per stage).
-      # `if: always()` so a lens that rejected (the action may exit non-zero) still
-      # hands its verdict over; a lens that produced NO verdict uploads nothing, and the
-      # aggregator fails closed on the missing artifact.
+      # `if: always()` so a lens whose action step failed for any reason still hands
+      # over whatever verdict it wrote; a lens that produced NO verdict uploads
+      # nothing, and the aggregator fails closed on the missing artifact.
       - name: Publish this lens's verdict
         timeout-minutes: 5
         if: always()
