@@ -16,7 +16,7 @@ Direct in-process consumption (the usage shown below) is for: writing your own M
 
 ## Subpaths
 
-- `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, `wrapWithCache` decorator that adds read-through caching to any `@verevoir/sources` adapter, `wrapWorkflowWithCache` decorator that does the same for any `@verevoir/workflows` adapter, `IndexKey` + `SymbolEntry` types. No external dependencies; the decorators type-check against `@verevoir/sources` / `@verevoir/workflows` but don't import them at runtime unless you call them.
+- `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, the generic `warmSource` / `grepSource` cold ops (see [Cold ops](#cold-ops--eager-warm-lazy-grep)), `wrapWithCache` decorator that adds read-through caching to any `@verevoir/sources` adapter, `wrapWorkflowWithCache` decorator that does the same for any `@verevoir/workflows` adapter, `IndexKey` + `SymbolEntry` types. No external dependencies; the decorators type-check against `@verevoir/sources` / `@verevoir/workflows` but don't import them at runtime unless you call them.
 - `@verevoir/context/code` — tree-sitter symbol extraction (`parseSymbols`, `detectLanguage`) + `findSymbols` over the store. Optional peer deps on tree-sitter packages.
 - `@verevoir/context/github` — cached GitHub source. Drop-in replacement for `@verevoir/sources/github` that adds read-through caching. Identical contract.
 - `@verevoir/context/fs` — cached local-filesystem source. Drop-in replacement for `@verevoir/sources/fs` that adds read-through caching. Identical contract.
@@ -140,6 +140,28 @@ const cached = wrapWithCache(github);
 // Or tune it explicitly.
 const eager = wrapWithCache(github, { validationTtlMs: 1000 }); // probe every second
 const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minute
+```
+
+### Cold ops — eager warm, lazy grep
+
+`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs and github subpaths export bindings of both.
+
+`WarmSourceOptions`: `store`, `ref`, `concurrency` (default 8), `prefix`, `include` / `exclude` globs. `prefix` scopes the op to one subtree (`'src'` and `'src/'` are equivalent; matching is segment-aware, so `'src'` never covers `'srcx/…'`).
+
+The two ops split eager vs lazy deliberately:
+
+- **`warmSource` is eager by choice** — a long-session consumer warms the whole tree (or a chosen `prefix`) up front and every later op is a pure cache hit. Its behaviour is unchanged by the laziness below.
+- **`grepSource` is lazy** — it processes files in the deterministic search order (sorted item ids, the same order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and stops scheduling reads once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: the hits are exactly what whole-tree-warm-then-`grep` would return for the same options — early termination changes how much is _read_, never what is _returned_. Whatever it does read is warmed into the store; already-warm entries serve from cache without a re-read.
+
+```ts
+import { warmSource, grepSource } from '@verevoir/context';
+import { fs } from '@verevoir/sources/fs';
+
+// One-shot question: reads only as many files as the answer needs.
+const hits = await grepSource(fs, env, '/repo', 'AuthHandler', { maxResults: 10 });
+
+// Long session: warm a subtree deliberately, then everything is a cache hit.
+await warmSource(fs, env, '/repo', { prefix: 'src' });
 ```
 
 ### Caching a workflow source

@@ -16,7 +16,7 @@ Direct in-process use (below) is for: writing your own MCP server, customising `
 
 ## Subpaths
 
-- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, `wrapWorkflowWithCache` decorator over any `@verevoir/workflows` `WorkflowAdapter` (board reads share the same store, so they park/restore with `serialize()`), the generic `warmSource(adapter, env, sourceUrl, options)` / `grepSource` cold-search primitives (enumerate via `getRepoTree`, parallel-read every in-bounds text file into the store, skipping binary + oversized; `WarmSourceOptions` = `store` / `ref` / `concurrency`, default 8), key + symbol types. No external dependencies. Optional peer dep on `@verevoir/workflows` (type-only unless `wrapWorkflowWithCache` is called).
+- `@verevoir/context` — `ContextStore` (content + symbol cache), `grep`, `wrapWithCache` decorator over any `SourceAdapter`, `wrapWorkflowWithCache` decorator over any `@verevoir/workflows` `WorkflowAdapter` (board reads share the same store, so they park/restore with `serialize()`), the generic `warmSource(adapter, env, sourceUrl, options)` / `grepSource` cold-search primitives (enumerate via `getRepoTree`, bounded-concurrency reads into the store, skipping binary + oversized; `WarmSourceOptions` = `store` / `ref` / `concurrency` (default 8) / `prefix` / `include` / `exclude`; see Cold ops below), key + symbol types. No external dependencies. Optional peer dep on `@verevoir/workflows` (type-only unless `wrapWorkflowWithCache` is called).
 - `@verevoir/context/code` — tree-sitter `parseCode` (symbols + import/call edges), `parseSymbols`, `detectLanguage`, `findSymbols` / `edgesForItem` over the store. Languages: TypeScript/TSX/JavaScript, Python, Java, C#, Go, Scala, C, C++. Optional peer deps on the tree-sitter grammar packages.
 - `@verevoir/context/github` — `wrapWithCache(github)` drop-in, plus github bindings of `warmSource` / `grepSource` (cold grep + cold `find_symbol` over a whole repo). Optional peer dep on `@verevoir/sources@^0.4.0`.
 - `@verevoir/context/fs` — `wrapWithCache(fs)` drop-in, plus fs bindings of `warmSource` / `grepSource`. Optional peer dep on `@verevoir/sources@^0.4.0`.
@@ -63,6 +63,12 @@ const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] }
 - The 10s default covers a tool-loop's burst of correlated reads; it's a dial to tune from observed cost vs staleness.
 
 `store.getCached(key)` returns the full `{ content, version, cachedAt }` triple. `store.getContent(key)` returns just the content (used by `grep`).
+
+## Cold ops — eager warm, lazy grep
+
+- `warmSource` is **eager by choice**: pull the whole tree (or a `prefix` subtree) into the store up front, so later `grep` / `findSymbols` are pure cache hits — the long-session pattern. Behaviour unchanged by grepSource's laziness.
+- `grepSource` is **lazy**: files are processed in the deterministic search order (sorted item ids — the order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and no further reads are scheduled once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: hits are exactly what whole-tree-warm-then-`grep` would return for the same options; early termination changes how much is read, never what is returned. Files it does read are warmed; already-warm entries serve from cache without a re-read.
+- `WarmSourceOptions.prefix` scopes either op to one subtree: `'src'` and `'src/'` are equivalent, matching is segment-aware (`'src'` never covers `'srcx/…'`), and it composes with `include` / `exclude`.
 
 ## Caching a workflow source
 
