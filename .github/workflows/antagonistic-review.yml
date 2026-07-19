@@ -157,6 +157,25 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: timeout 120 git fetch --no-tags origin "$HEAD_SHA"
 
+      - name: Resolve the merge base (the PR's true divergence point)
+        timeout-minutes: 2
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # The fetch must not fail the step (bash -e): a deleted/renamed base ref is
+          # exactly the case the frozen-sha fallback below exists for.
+          timeout 60 git fetch --no-tags origin "$BASE_REF" || echo "base ref '$BASE_REF' not fetchable — falling back to the frozen event sha"
+          mb="$(git merge-base "origin/$BASE_REF" "$HEAD_SHA" 2>/dev/null \
+            || git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)"
+          if [ -z "$mb" ]; then
+            echo "::error title=No merge base::Neither the live base ref nor the frozen event sha yields a merge base with HEAD — the diff range cannot be established. Failing closed."
+            exit 1
+          fi
+          echo "MERGE_BASE=$mb" >> "$GITHUB_ENV"
+          echo "merge base: $mb (current tip of '$BASE_REF' vs head)"
+
       # `npx github:verevoir/capabilities` (spawned per mcp.json) has to CLONE that
       # private repo. Route git over HTTPS with the same token.
       - name: Rewrite ssh github URLs to https (for the public accelerator dep)
@@ -210,7 +229,10 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           # the change under review, as commit shas — the working tree is BASE, so the
           # reviewer reads the HEAD only through git (never a checked-out, executable tree).
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          # BASE is the RESOLVED merge base against the live base ref: a frozen event
+          # sha reviews a stale diff the moment the base branch moves (sibling repos'
+          # wrong-diff bug, fixed as capabilities#16 / guardrails#145).
+          BASE_SHA: ${{ env.MERGE_BASE }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         with:
           # Pass both; the Claude Code CLI uses the OAuth token over the API key
