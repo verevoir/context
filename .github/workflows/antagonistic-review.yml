@@ -173,8 +173,12 @@ jobs:
             echo "::error title=No merge base::Neither the live base ref nor the frozen event sha yields a merge base with HEAD — the diff range cannot be established. Failing closed."
             exit 1
           fi
+          if [ "$mb" = "$HEAD_SHA" ]; then
+            echo "::error title=Nothing to review::HEAD is already contained in the live base ref — the diff is empty and a review would be a vacuous pass. Failing closed."
+            exit 1
+          fi
           echo "MERGE_BASE=$mb" >> "$GITHUB_ENV"
-          echo "merge base: $mb (current tip of '$BASE_REF' vs head)"
+          echo "merge base: $mb (divergence point of live '$BASE_REF' and head)"
 
       # `npx github:verevoir/capabilities` (spawned per mcp.json) has to CLONE that
       # private repo. Route git over HTTPS with the same token.
