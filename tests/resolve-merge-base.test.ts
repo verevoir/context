@@ -11,8 +11,17 @@ const SCRIPT = fileURLToPath(
   new URL('../.github/antagonistic-review/resolve-merge-base.sh', import.meta.url)
 );
 
+// Start from process.env (PATH etc.), but strip any repo-pointing git vars the
+// runner environment might carry — they would redirect the fixture's git operations.
+const {
+  GIT_DIR: _d,
+  GIT_WORK_TREE: _w,
+  GIT_INDEX_FILE: _i,
+  GIT_OBJECT_DIRECTORY: _o,
+  ...cleanEnv
+} = process.env;
 const GIT_ENV = {
-  ...process.env,
+  ...cleanEnv,
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 't',
@@ -106,6 +115,49 @@ describe('resolve-merge-base.sh — the diff range the panel reviews', () => {
       expect(code).toBe(0);
       expect(stdout).toContain('falling back to the frozen event sha');
       expect(exported).toContain(`MERGE_BASE=${a}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the frozen sha when the base ref fetches but shares no history with HEAD', async () => {
+    const { dir, work, a, head } = await repoFixture();
+    try {
+      // an orphan branch on origin: the fetch succeeds, but merge-base(origin/orphan,
+      // HEAD) exits non-zero — the FIRST sub-expression's failure, distinct from the
+      // unfetchable-ref case
+      await git(work, 'checkout', '--orphan', 'orphan');
+      await git(work, 'rm', '-rf', '.');
+      await writeFile(join(work, 'o'), 'o\n');
+      await git(work, 'add', 'o');
+      await git(work, 'commit', '-m', 'O');
+      await git(work, 'push', 'origin', 'orphan');
+      await git(work, 'checkout', 'main');
+      const { code, exported } = await resolve(work, {
+        BASE_REF: 'orphan',
+        BASE_SHA: a,
+        HEAD_SHA: head,
+      });
+      expect(code).toBe(0);
+      expect(exported).toContain(`MERGE_BASE=${a}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed via the fallback path when the frozen sha IS the head (empty diff)', async () => {
+    const { dir, work, head } = await repoFixture();
+    try {
+      // unfetchable ref forces the frozen-sha fallback, and BASE_SHA == HEAD_SHA makes
+      // the merge base HEAD itself — the vacuous-pass guard must fire on this path too
+      const { code, stdout, exported } = await resolve(work, {
+        BASE_REF: 'deleted-branch',
+        BASE_SHA: head,
+        HEAD_SHA: head,
+      });
+      expect(code).not.toBe(0);
+      expect(stdout).toContain('Nothing to review');
+      expect(exported).not.toContain('MERGE_BASE=');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
