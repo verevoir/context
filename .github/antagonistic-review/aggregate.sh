@@ -2,9 +2,9 @@
 # Union every panel lens's verdict and gate on unanimous approval — the merge gate's
 # decision. Fails CLOSED: exits non-zero if any lens rejected, produced a non-APPROVE or
 # malformed verdict, is missing, or if a verdict ran for a lens OUTSIDE the gated set
-# (matrix/aggregator drift). The lens set is FIXED — PANEL_LENSES overrides it for tests,
-# else the default is used when it is UNSET. Extracted from the workflow so the gate's
-# decision logic is unit-testable.
+# (matrix/aggregator drift). PANEL_LENSES overrides the lens set when set (tests use
+# this); in production it is unset, so the hardcoded default applies. Extracted from the
+# workflow so the gate's decision logic is unit-testable.
 set -euo pipefail
 
 dir="${1:?usage: aggregate.sh <verdicts-dir>}"

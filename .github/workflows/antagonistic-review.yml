@@ -33,9 +33,10 @@
 # the aggregator log; the panel needs no PR write access, so `pull-requests: write` is not
 # granted.
 #
-# BOOTSTRAP: `pull_request_target` evaluates from base, so the panel cannot run on the PR
-# that first introduces or changes THIS file — that one merge is a human-reviewed
-# bootstrap. Every subsequent PR is gated normally.
+# BOOTSTRAP: `pull_request_target` evaluates from base, so the PR that first introduces
+# THIS file merges as a human-reviewed bootstrap (no panel exists yet to run). A PR that
+# CHANGES this file is still gated — by the previous version of the panel from base; the
+# changed gate takes effect only after merge.
 
 name: Antagonistic review
 

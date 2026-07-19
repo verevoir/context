@@ -83,7 +83,10 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
   });
 
   it('fails closed when the lens directory exists but the verdict file is absent', async () => {
-    expect((await aggregate({ a: verdict('APPROVE'), b: null })).code).toBe(1);
+    const { code, stdout } = await aggregate({ a: verdict('APPROVE'), b: null });
+    expect(code).toBe(1);
+    // the failure must come from the missing-verdict guard, naming the lens
+    expect(stdout).toContain("Missing verdict::Panelist 'b'");
   });
 
   it('fails closed on a malformed verdict json', async () => {
@@ -146,7 +149,10 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
       summary: 'x'.repeat(1_100_000),
       findings: [],
     });
-    expect((await aggregate({ a: verdict('APPROVE'), b: huge })).code).toBe(1);
+    const { code, stdout } = await aggregate({ a: verdict('APPROVE'), b: huge });
+    expect(code).toBe(1);
+    // the failure must come from the oversize guard, not some other path
+    expect(stdout).toContain("Oversize verdict::Panelist 'b'");
   });
 
   it('prints each lens, its verdict, and its findings', async () => {
