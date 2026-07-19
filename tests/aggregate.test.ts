@@ -162,6 +162,23 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
     expect(stdout).toContain("Oversize verdict::Panelist 'b'");
   });
 
+  it('draws the oversize boundary exactly: 1,000,000 bytes parses, one byte more refuses', async () => {
+    // all-ASCII JSON, so bytes == chars; pad the summary to hit the exact total
+    const exact = (total: number) => {
+      const scaffold = JSON.stringify({ verdict: 'APPROVE', summary: '', findings: [] }).length;
+      return JSON.stringify({
+        verdict: 'APPROVE',
+        summary: 'x'.repeat(total - scaffold),
+        findings: [],
+      });
+    };
+    const atCap = await aggregate({ a: verdict('APPROVE'), b: exact(1_000_000) });
+    expect(atCap.code).toBe(0);
+    const overCap = await aggregate({ a: verdict('APPROVE'), b: exact(1_000_001) });
+    expect(overCap.code).toBe(1);
+    expect(overCap.stdout).toContain("Oversize verdict::Panelist 'b'");
+  });
+
   it('prints each lens, its verdict, and its findings', async () => {
     const { stdout } = await aggregate({
       a: verdict('APPROVE'),
