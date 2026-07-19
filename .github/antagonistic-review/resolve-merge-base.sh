@@ -12,7 +12,6 @@ set -euo pipefail
 
 : "${BASE_REF:?}" "${BASE_SHA:?}" "${HEAD_SHA:?}" "${GITHUB_ENV:?}"
 
-# coreutils timeout is always on the runner; dev laptops may lack it.
 if command -v timeout >/dev/null 2>&1; then bounded() { timeout "$@"; }; else bounded() { shift; "$@"; }; fi
 
 # The fetch must not fail the script (set -e): a deleted/renamed base ref is exactly

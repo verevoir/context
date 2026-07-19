@@ -130,6 +130,16 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
     expect(code).toBe(0);
   });
 
+  it('rejects the real production lens set when a single production lens REJECTS', async () => {
+    const lenses = ['correctness', 'security', 'testing', 'docs', 'resilience'];
+    const files = Object.fromEntries(
+      lenses.map((l) => [l, verdict(l === 'security' ? 'REJECT' : 'APPROVE')])
+    );
+    const { code, stdout } = await aggregate(files, false);
+    expect(code).not.toBe(0);
+    expect(stdout).toContain('### security — REJECT');
+  });
+
   it('fails closed on an oversize verdict file, refusing to parse untrusted bulk', async () => {
     const huge = JSON.stringify({
       verdict: 'APPROVE',

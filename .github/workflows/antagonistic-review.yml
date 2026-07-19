@@ -106,6 +106,7 @@ jobs:
       # credential is fail-closed by construction.
       - name: Mint an ephemeral GitHub App token (reviewer-MCP clone + corpus read)
         id: app-token
+        timeout-minutes: 2
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.VEREVOIR_APP_ID }}
@@ -114,6 +115,7 @@ jobs:
           repositories: capabilities,aigency-guardrails
 
       - name: Fail loud if the reviewer cannot run (no rubric = no review)
+        timeout-minutes: 2
         env:
           GATE_TOKEN: ${{ steps.app-token.outputs.token }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -148,6 +150,7 @@ jobs:
       # empty diff a panelist would trivially APPROVE — a vacuous pass on a REQUIRED
       # check. Refuse it: only a real PR with a distinct head is reviewable.
       - name: Guard against an empty diff (no real change to review)
+        timeout-minutes: 1
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -158,6 +161,7 @@ jobs:
           fi
 
       - name: Fetch the PR head for review (read-only — never checked out or executed)
+        timeout-minutes: 3
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: timeout 120 git fetch --no-tags origin "$HEAD_SHA"
@@ -175,6 +179,7 @@ jobs:
       # `npx github:verevoir/capabilities` (spawned per mcp.json) has to CLONE that
       # private repo. Route git over HTTPS with the same token.
       - name: Rewrite ssh github URLs to https (for the public accelerator dep)
+        timeout-minutes: 1
         run: |
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
           git config --global --add url."https://github.com/".insteadOf "git@github.com:"
@@ -356,4 +361,5 @@ jobs:
           path: verdicts
 
       - name: Union the findings and gate on unanimous approval
+        timeout-minutes: 5
         run: bash .github/antagonistic-review/aggregate.sh verdicts

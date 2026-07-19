@@ -23,17 +23,15 @@ case "$lenses" in
     ;;
 esac
 
-# Neutralise a line-starting `::` in anything echoed from a verdict (which a
-# prompt-injected panelist controls), so it cannot emit a GitHub Actions workflow command.
-# Neutralise GHA workflow-command injection from panelist-controlled text:
-# strip CR (a literal \r acts as a line terminator to the runner, letting
-# '::cmd' open a line sed's ^ never sees), %-encode (kills %0D/%0A escape
-# smuggling inside echoed values), then indent any line-start '::'.
+# Neutralise GHA workflow-command injection in anything echoed from a verdict (which
+# a prompt-injected panelist controls): strip CR (a literal \r acts as a line
+# terminator to the runner, letting '::cmd' open a line sed's ^ never sees), %-encode
+# (kills %0D/%0A escape smuggling), then indent any line-start '::'.
 safe() { tr -d '\r' | sed -e 's/%/%25/g' -e 's/^::/ ::/'; }
 
 # Bound every jq parse of untrusted panelist JSON: a pathological-but-under-1MB payload
 # must fail this one lens closed, not hold the aggregator to the job envelope.
-# coreutils timeout is always on the runner; dev laptops may lack it.
+# (Guarded — dev machines may lack coreutils timeout; CI runners always have it.)
 if command -v timeout >/dev/null 2>&1; then jq_bounded() { timeout 10 jq "$@"; }; else jq_bounded() { jq "$@"; }; fi
 
 ok=1
