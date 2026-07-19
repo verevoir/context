@@ -31,6 +31,11 @@ esac
 # smuggling inside echoed values), then indent any line-start '::'.
 safe() { tr -d '\r' | sed -e 's/%/%25/g' -e 's/^::/ ::/'; }
 
+# Bound every jq parse of untrusted panelist JSON: a pathological-but-under-1MB payload
+# must fail this one lens closed, not hold the aggregator to the job envelope.
+# coreutils timeout is always on the runner; dev laptops may lack it.
+if command -v timeout >/dev/null 2>&1; then jq_bounded() { timeout 10 jq "$@"; }; else jq_bounded() { jq "$@"; }; fi
+
 ok=1
 echo "## Antagonistic panel — verdict by lens"
 for lens in $lenses; do
@@ -41,18 +46,19 @@ for lens in $lenses; do
     continue
   fi
   # A verdict is a small JSON object; anything over 1MB is a model-written path gone wrong
-  # (or an injection attempt). Refuse to parse untrusted bulk rather than risk OOM.
-  if [ "$(wc -c <"$f")" -gt 1000000 ]; then
+  # (or an injection attempt). The read itself is capped at 1MB+1 — size is decided
+  # without ever consuming an unbounded stream.
+  if [ "$(head -c 1000001 "$f" | wc -c)" -gt 1000000 ]; then
     echo "::error title=Oversize verdict::Panelist '$lens' produced a verdict over 1MB — refusing to parse. Failing closed."
     ok=0
     continue
   fi
-  v="$(jq -r '.verdict // empty' "$f" 2>/dev/null || echo '')"
+  v="$(jq_bounded -r '.verdict // empty' "$f" 2>/dev/null || echo '')"
   {
     echo ""
     echo "### ${lens} — ${v:-none}"
-    jq -r '.summary // ""' "$f" 2>/dev/null || true
-    jq -r '.findings[]? | "  - " + .' "$f" 2>/dev/null || true
+    jq_bounded -r '.summary // ""' "$f" 2>/dev/null || true
+    jq_bounded -r '.findings[]? | "  - " + .' "$f" 2>/dev/null || true
   } | safe
   [ "$v" = "APPROVE" ] || ok=0
 done

@@ -56,6 +56,11 @@ jobs:
   # its lens, then writes its verdict as an artifact for the aggregator to union.
   review:
     name: review (${{ matrix.lens }})
+    # Hard control on the pull_request_target secret surface: panelists (and the org
+    # secrets they hold) only run for same-repo heads. A fork PR skips the panel, the
+    # aggregator fails closed on the missing verdicts, and a human reviews it instead.
+    # workflow_dispatch still enters and is refused loudly by the empty-diff guard.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # envelope exceeds the sum of the inner step bounds (checkout 5m + head-fetch 2m +
     # MCP setup 8m + model 12m = 27m) so the step timeouts, not this backstop, bind
@@ -157,28 +162,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: timeout 120 git fetch --no-tags origin "$HEAD_SHA"
 
+      # Extracted (like aggregate.sh) so its four branches are unit-testable; it runs
+      # from the base checkout above, so a PR cannot alter its own gate.
       - name: Resolve the merge base (the PR's true divergence point)
         timeout-minutes: 2
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          # The fetch must not fail the step (bash -e): a deleted/renamed base ref is
-          # exactly the case the frozen-sha fallback below exists for.
-          timeout 60 git fetch --no-tags origin "$BASE_REF" || echo "base ref '$BASE_REF' not fetchable — falling back to the frozen event sha"
-          mb="$(git merge-base "origin/$BASE_REF" "$HEAD_SHA" 2>/dev/null \
-            || git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)"
-          if [ -z "$mb" ]; then
-            echo "::error title=No merge base::Neither the live base ref nor the frozen event sha yields a merge base with HEAD — the diff range cannot be established. Failing closed."
-            exit 1
-          fi
-          if [ "$mb" = "$HEAD_SHA" ]; then
-            echo "::error title=Nothing to review::HEAD is already contained in the live base ref — the diff is empty and a review would be a vacuous pass. Failing closed."
-            exit 1
-          fi
-          echo "MERGE_BASE=$mb" >> "$GITHUB_ENV"
-          echo "merge base: $mb (divergence point of live '$BASE_REF' and head)"
+        run: bash .github/antagonistic-review/resolve-merge-base.sh
 
       # `npx github:verevoir/capabilities` (spawned per mcp.json) has to CLONE that
       # private repo. Route git over HTTPS with the same token.
