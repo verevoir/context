@@ -184,6 +184,7 @@ jobs:
           git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 
       - name: Pre-build the reviewer MCP (@verevoir/capabilities)
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -326,6 +327,7 @@ jobs:
       # hands its verdict over; a lens that produced NO verdict uploads nothing, and the
       # aggregator fails closed on the missing artifact.
       - name: Publish this lens's verdict
+        timeout-minutes: 5
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -352,6 +354,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
 
       - name: Collect the panel's verdicts
+        timeout-minutes: 5
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: verdicts
