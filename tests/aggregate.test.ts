@@ -40,7 +40,14 @@ async function aggregate(
       const { stdout } = await run('bash', [SCRIPT, dir], { env, timeout: 20000 });
       return { code: 0, stdout };
     } catch (e) {
-      const err = e as { code?: number; stdout?: string };
+      const err = e as { code?: number; stdout?: string; killed?: boolean; signal?: string };
+      // A timed-out-and-killed subprocess must fail the test loudly — reading it as a
+      // plain non-zero exit would let a hung script pass every fail-closed assertion.
+      if (err.killed || err.signal) {
+        throw new Error(
+          `aggregate.sh was killed (${err.signal ?? 'timeout'}) — hung, not rejected`
+        );
+      }
       return { code: err.code ?? 1, stdout: err.stdout ?? '' };
     }
   } finally {
@@ -48,8 +55,14 @@ async function aggregate(
   }
 }
 
+// ANY line-start `::` is a workflow command to the runner (splitting on \r too — a
+// raw CR is a line terminator to it). The aggregator's own fail-closed `::error`
+// lines are the only legitimate ones, so the oracle allowlists exactly those titles
+// and flags everything else — including commands no test has thought to smuggle yet.
+const AGGREGATOR_OWN_ERROR =
+  /^::error title=(No panel lenses|Invalid lens set|Missing verdict|Oversize verdict|Unexpected lens|Change rejected)::/;
 const startsWithCommand = (stdout: string) =>
-  stdout.split('\n').some((l) => l.startsWith('::add-mask'));
+  stdout.split(/\r?\n|\r/).some((l) => l.startsWith('::') && !AGGREGATOR_OWN_ERROR.test(l));
 
 describe('aggregate.sh — union the panel and gate on unanimous approval', () => {
   it('exits 0 and reports success when every lens APPROVES', async () => {
@@ -77,7 +90,10 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
   });
 
   it('fails closed when the lens directory exists but the verdict file is absent', async () => {
-    expect((await aggregate({ a: verdict('APPROVE'), b: null })).code).toBe(1);
+    const { code, stdout } = await aggregate({ a: verdict('APPROVE'), b: null });
+    expect(code).toBe(1);
+    // the failure must come from the missing-verdict guard, naming the lens
+    expect(stdout).toContain("Missing verdict::Panelist 'b'");
   });
 
   it('fails closed on a malformed verdict json', async () => {
@@ -124,13 +140,43 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
     expect(code).toBe(0);
   });
 
+  it('rejects the real production lens set when a single production lens REJECTS', async () => {
+    const lenses = ['correctness', 'security', 'testing', 'docs', 'resilience'];
+    const files = Object.fromEntries(
+      lenses.map((l) => [l, verdict(l === 'security' ? 'REJECT' : 'APPROVE')])
+    );
+    const { code, stdout } = await aggregate(files, false);
+    expect(code).not.toBe(0);
+    expect(stdout).toContain('### security — REJECT');
+  });
+
   it('fails closed on an oversize verdict file, refusing to parse untrusted bulk', async () => {
     const huge = JSON.stringify({
       verdict: 'APPROVE',
       summary: 'x'.repeat(1_100_000),
       findings: [],
     });
-    expect((await aggregate({ a: verdict('APPROVE'), b: huge })).code).toBe(1);
+    const { code, stdout } = await aggregate({ a: verdict('APPROVE'), b: huge });
+    expect(code).toBe(1);
+    // the failure must come from the oversize guard, not some other path
+    expect(stdout).toContain("Oversize verdict::Panelist 'b'");
+  });
+
+  it('draws the oversize boundary exactly: 1,000,000 bytes parses, one byte more refuses', async () => {
+    // all-ASCII JSON, so bytes == chars; pad the summary to hit the exact total
+    const exact = (total: number) => {
+      const scaffold = JSON.stringify({ verdict: 'APPROVE', summary: '', findings: [] }).length;
+      return JSON.stringify({
+        verdict: 'APPROVE',
+        summary: 'x'.repeat(total - scaffold),
+        findings: [],
+      });
+    };
+    const atCap = await aggregate({ a: verdict('APPROVE'), b: exact(1_000_000) });
+    expect(atCap.code).toBe(0);
+    const overCap = await aggregate({ a: verdict('APPROVE'), b: exact(1_000_001) });
+    expect(overCap.code).toBe(1);
+    expect(overCap.stdout).toContain("Oversize verdict::Panelist 'b'");
   });
 
   it('prints each lens, its verdict, and its findings', async () => {
@@ -163,6 +209,37 @@ describe('aggregate.sh — union the panel and gate on unanimous approval', () =
       a: verdict('APPROVE'),
       b: verdict('REJECT', ['first line\n::add-mask::Y']),
     });
+    expect(startsWithCommand(stdout)).toBe(false);
+  });
+
+  it('neutralises a workflow-command smuggled through a carriage return — \\r is a runner line terminator sed alone never sees', async () => {
+    const { stdout } = await aggregate({
+      a: verdict('APPROVE'),
+      b: verdict('REJECT', ['benign\r::set-env name=X::pwned']),
+    });
+    expect(startsWithCommand(stdout)).toBe(false);
+    expect(stdout).not.toContain('\r::');
+  });
+
+  it('neutralises a workflow-command opening the summary field', async () => {
+    const { stdout } = await aggregate({
+      a: verdict('APPROVE'),
+      b: JSON.stringify({
+        verdict: 'REJECT',
+        summary: '::error title=Fake::injected',
+        findings: ['x'],
+      }),
+    });
+    expect(startsWithCommand(stdout)).toBe(false);
+  });
+
+  it('percent-encodes panelist text so %0D/%0A escape smuggling dies at the source', async () => {
+    const { stdout } = await aggregate({
+      a: verdict('APPROVE'),
+      b: verdict('REJECT', ['try %0D::add-mask::Z smuggle', 'and %0A::stop-commands::t too']),
+    });
+    expect(stdout).toContain('%250D');
+    expect(stdout).toContain('%250A');
     expect(startsWithCommand(stdout)).toBe(false);
   });
 });

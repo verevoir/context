@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **CI: the antagonistic gate reviews the live merge-base** (STDIO-584). The panel's diff range now resolves against the live base ref via an extracted, unit-tested `resolve-merge-base.sh` (the frozen event sha is fallback only; fail-closed when no merge base exists or the diff would be empty) — ending the wrong-diff reviews observed whenever main moved after a PR opened. Hardening absorbed from the review rounds: CR-stripping + %-encoding in the aggregator's workflow-command neutralisation, bounded jq parses and a capped oversize read, a same-repo guard so fork PRs never run with panelist secrets, and step-level timeouts on every workflow step. (The 5-lens panel itself landed with STDIO-564.)
+
 ## 0.13.0 — 2026-07-05
 
 - **`wrapWithCache` covers `commitFiles`** (STDIO-543). The multi-file, atomically-committed twin of `writeFile` (added to the `SourceAdapter` contract in `@verevoir/sources@0.7.0`) now passes through the cache facade and applies the identical cache treatment to every file in the set: populate the just-written content under the `version: branch` key with an unknown (forced-stale) version so the next freshness check re-fetches the real sha, and drop the `version: ''` default-branch alias so a later no-ref read can't serve pre-commit content — the same dual-scope invariant `writeFile` holds (STDIO-134), now per file across the whole change-set. Bumps the `@verevoir/sources` dep to `^0.7.0` for the `commitFiles` contract.
