@@ -40,7 +40,14 @@ async function aggregate(
       const { stdout } = await run('bash', [SCRIPT, dir], { env, timeout: 20000 });
       return { code: 0, stdout };
     } catch (e) {
-      const err = e as { code?: number; stdout?: string };
+      const err = e as { code?: number; stdout?: string; killed?: boolean; signal?: string };
+      // A timed-out-and-killed subprocess must fail the test loudly — reading it as a
+      // plain non-zero exit would let a hung script pass every fail-closed assertion.
+      if (err.killed || err.signal) {
+        throw new Error(
+          `aggregate.sh was killed (${err.signal ?? 'timeout'}) — hung, not rejected`
+        );
+      }
       return { code: err.code ?? 1, stdout: err.stdout ?? '' };
     }
   } finally {

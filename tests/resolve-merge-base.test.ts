@@ -76,7 +76,13 @@ async function resolve(
     });
     return { code: 0, stdout, exported: await readFile(githubEnv, 'utf8') };
   } catch (e) {
-    const err = e as { code?: number; stdout?: string };
+    const err = e as { code?: number; stdout?: string; killed?: boolean; signal?: string };
+    // Same discipline as the aggregate harness: a killed subprocess is a hang, not a verdict.
+    if (err.killed || err.signal) {
+      throw new Error(
+        `resolve-merge-base.sh was killed (${err.signal ?? 'timeout'}) — hung, not failed`
+      );
+    }
     return {
       code: err.code ?? 1,
       stdout: err.stdout ?? '',
