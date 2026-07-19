@@ -319,8 +319,10 @@ const DEFAULT_GREP_CONTEXT = 2;
  * single matching kernel shared by the pure `grep` and the lazy
  * `grepSource` path. Sharing it makes per-line matching identical,
  * but the equal-hits contract also depends on the call sites: `grep`
- * passes its remaining capacity as `budget`, while `grepSource`
- * passes the full max and truncates in its assembly loop. */
+ * passes its remaining capacity (`max - hits.length`) per call, while
+ * `grepSource` passes the full `max` per file — so one file may yield
+ * up to `max` hits on its own — and applies the cap once, over the
+ * ordered accumulation, when assembling the settled prefix. */
 function matchContent(
   sourceId: string,
   itemId: string,

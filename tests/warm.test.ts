@@ -228,10 +228,11 @@ describe('grepSource — early-terminating lazy path', () => {
   async function eagerGrep(
     files: Record<string, FileFixture>,
     pattern: string,
-    options: { maxResults?: number; ignoreCase?: boolean; contextLines?: number } = {}
+    options: { maxResults?: number; ignoreCase?: boolean; contextLines?: number } = {},
+    prefix?: string
   ) {
     const eagerStore = createContextStore();
-    await warmSource(mockAdapter(files), ENV, URL, { store: eagerStore });
+    await warmSource(mockAdapter(files), ENV, URL, { store: eagerStore, prefix });
     return grep(
       pattern,
       { sources: [{ sourceId: URL, version: '' }] },
@@ -466,6 +467,46 @@ describe('grepSource — early-terminating lazy path', () => {
     );
 
     expect(hits.map((h) => h.itemId)).toEqual(['docs/z.ts', 'src/a.ts']);
+  });
+
+  it('holds the equal-hits contract under prefix + maxResults together', async () => {
+    // Matches inside and outside the prefix; the comparison case is a
+    // prefix-scoped warm + grep, and the cap must bind identically.
+    const files: Record<string, FileFixture> = {
+      'lib/x.ts': { content: 'needle outside' },
+      'src/a.ts': { content: 'needle\nneedle' },
+      'src/b.ts': { content: 'needle\nneedle' },
+      'src/c.ts': { content: 'needle' },
+    };
+
+    const lazy = await grepSource(mockAdapter(files), ENV, URL, 'needle', {
+      store,
+      prefix: 'src',
+      maxResults: 3,
+    });
+
+    expect(lazy).toEqual(await eagerGrep(files, 'needle', { maxResults: 3 }, 'src'));
+    expect(lazy).toHaveLength(3);
+    expect(lazy.every((h) => h.itemId.startsWith('src/'))).toBe(true);
+  });
+
+  it('normalises the prefix at the grepSource call site — src and src/ scope identically', async () => {
+    const files: Record<string, FileFixture> = {
+      'src/a.ts': { content: 'needle a' },
+      'srcx/b.ts': { content: 'needle b' },
+    };
+
+    const bare = await grepSource(mockAdapter(files), ENV, URL, 'needle', {
+      store: createContextStore(),
+      prefix: 'src',
+    });
+    const slashed = await grepSource(mockAdapter(files), ENV, URL, 'needle', {
+      store: createContextStore(),
+      prefix: 'src/',
+    });
+
+    expect(bare).toEqual(slashed);
+    expect(bare.map((h) => h.itemId)).toEqual(['src/a.ts']); // srcx/ never covered
   });
 
   it('returns an empty array when nothing in a fully-streamed tree matches', async () => {

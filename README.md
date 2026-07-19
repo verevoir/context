@@ -154,14 +154,13 @@ The two ops split eager vs lazy deliberately:
 - **`grepSource` is lazy** — it processes files in the deterministic search order (sorted item ids, the same order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and stops scheduling reads once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: the hits are exactly what whole-tree-warm-then-`grep` would return for the same options — early termination changes how much is _read_, never what is _returned_. Whatever it does read is warmed into the store; already-warm entries serve from cache without a re-read.
 
 ```ts
-import { warmSource, grepSource } from '@verevoir/context';
-import { fs } from '@verevoir/sources/fs';
+import { warmSource, grepSource } from '@verevoir/context/fs';
 
 // One-shot question: reads only as many files as the answer needs.
-const hits = await grepSource(fs, env, '/repo', 'AuthHandler', { maxResults: 10 });
+const hits = await grepSource(env, '/repo', 'AuthHandler', { maxResults: 10 });
 
 // Long session: warm a subtree deliberately, then everything is a cache hit.
-await warmSource(fs, env, '/repo', { prefix: 'src' });
+await warmSource(env, '/repo', { prefix: 'src' });
 ```
 
 ### Caching a workflow source

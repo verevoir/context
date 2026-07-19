@@ -82,6 +82,20 @@ describe('grep', () => {
     expect(hits).toHaveLength(7);
   });
 
+  it('diminishes the budget across files — the cap binds mid-file, not per file', () => {
+    // A call site passing the full max per file (instead of the
+    // remaining capacity) would return 6 hits here, not 5.
+    prime(REPO_A, 'aa.ts', 'match\nmatch\nmatch');
+    prime(REPO_A, 'bb.ts', 'match\nmatch\nmatch');
+    const hits = grep(
+      'match',
+      { sources: [{ sourceId: REPO_A, version: VERSION }] },
+      { maxResults: 5 }
+    );
+    expect(hits).toHaveLength(5);
+    expect(hits.map((h) => h.itemId)).toEqual(['aa.ts', 'aa.ts', 'aa.ts', 'bb.ts', 'bb.ts']);
+  });
+
   it('handles content with no trailing newline', () => {
     prime(REPO_A, 'x.ts', 'first\nsecond');
     const hits = grep('second', {
