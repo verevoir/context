@@ -63,8 +63,9 @@ jobs:
     # workflow_dispatch still enters and is refused loudly by the empty-diff guard.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    # envelope exceeds the sum of the inner step bounds (checkout 5m + head-fetch 2m +
-    # MCP setup 8m + model 12m = 27m) so the step timeouts, not this backstop, bind
+    # envelope exceeds the sum of the step bounds (the four biggest: checkout 5m +
+    # head-fetch 2m + MCP setup 8m + model 12m = 27m; the remaining steps carry 1-2m
+    # bounds inside the slack) so the step timeouts, not this backstop, bind
     timeout-minutes: 30
     strategy:
       fail-fast: false
