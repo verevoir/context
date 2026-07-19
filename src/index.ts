@@ -802,7 +802,8 @@ export async function grepSource(
 
   const tree = await adapter.getRepoTree(env, sourceUrl, options.ref);
   const readable = new Set(eligibleBlobs(tree, options));
-  // The search space is exactly what a whole-scope warm would leave
+  // The search space is exactly what a warm of the requested scope
+  // (the same prefix / include / exclude) would leave
   // indexed: everything already cached for this (source, version)
   // plus every eligible tree blob — in the sorted order `grep` scans.
   const items = [...new Set([...store.listIndexedItems(sourceUrl, version), ...readable])].sort();

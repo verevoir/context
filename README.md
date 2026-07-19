@@ -151,7 +151,7 @@ const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minut
 The two ops split eager vs lazy deliberately:
 
 - **`warmSource` is eager by choice** — a long-session consumer warms the whole tree (or a chosen `prefix`) up front and every later op is a pure cache hit. Its behaviour is unchanged by the laziness below.
-- **`grepSource` is lazy** — it processes files in the deterministic search order (sorted item ids, the same order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and stops scheduling reads once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: the hits are exactly what whole-tree-warm-then-`grep` would return for the same options — early termination changes how much is _read_, never what is _returned_. Whatever it does read is warmed into the store; already-warm entries serve from cache without a re-read.
+- **`grepSource` is lazy** — it processes files in the deterministic search order (sorted item ids, the same order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and stops scheduling reads once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: the hits are exactly what warm-then-`grep` would return for the same options (prefix included — a prefix-scoped call compares against a prefix-scoped warm) — early termination changes how much is _read_, never what is _returned_. Whatever it does read is warmed into the store; already-warm entries serve from cache without a re-read.
 
 ```ts
 import { warmSource, grepSource } from '@verevoir/context/fs';

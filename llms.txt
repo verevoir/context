@@ -67,7 +67,7 @@ const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] }
 ## Cold ops — eager warm, lazy grep
 
 - `warmSource` is **eager by choice**: pull the whole tree (or a `prefix` subtree) into the store up front, so later `grep` / `findSymbols` are pure cache hits — the long-session pattern. Behaviour unchanged by grepSource's laziness.
-- `grepSource` is **lazy**: files are processed in the deterministic search order (sorted item ids — the order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and no further reads are scheduled once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: hits are exactly what whole-tree-warm-then-`grep` would return for the same options; early termination changes how much is read, never what is returned. Files it does read are warmed; already-warm entries serve from cache without a re-read.
+- `grepSource` is **lazy**: files are processed in the deterministic search order (sorted item ids — the order `grep` scans a warmed store) with `concurrency` as a bounded read-ahead window, and no further reads are scheduled once `maxResults` hits are settled by a contiguous completed prefix of that order. Contract: hits are exactly what warm-then-`grep` would return for the same options (prefix included — a prefix-scoped call compares against a prefix-scoped warm); early termination changes how much is read, never what is returned. Files it does read are warmed; already-warm entries serve from cache without a re-read.
 - `WarmSourceOptions.prefix` scopes either op to one subtree: `'src'` and `'src/'` are equivalent, matching is segment-aware (`'src'` never covers `'srcx/…'`), and it composes with `include` / `exclude`.
 
 ## Caching a workflow source
