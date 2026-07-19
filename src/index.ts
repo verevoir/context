@@ -557,7 +557,8 @@ export function wrapWithCache(
 }
 
 // ============================================================
-// warmSource — the one cache-warming mechanism, any file source
+// Cold ops — warmSource (the one eager cache-warming mechanism)
+// and the lazy per-file passes built beside it, any file source
 // ============================================================
 
 /** Files larger than this are skipped while warming — too big to be
