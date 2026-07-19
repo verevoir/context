@@ -228,7 +228,7 @@ describe('grepSource — early-terminating lazy path', () => {
   async function eagerGrep(
     files: Record<string, FileFixture>,
     pattern: string,
-    options: { maxResults?: number } = {}
+    options: { maxResults?: number; ignoreCase?: boolean; contextLines?: number } = {}
   ) {
     const eagerStore = createContextStore();
     await warmSource(mockAdapter(files), ENV, URL, { store: eagerStore });
@@ -347,5 +347,133 @@ describe('grepSource — early-terminating lazy path', () => {
     );
 
     expect(hits.map((h) => h.itemId)).toEqual(['a.ts', 'gone/z.ts']);
+  });
+
+  it('diminishes the budget across files — the cap can land mid-file, mid-order', async () => {
+    // Three matches per file; a cap of 5 takes all of f0, then only
+    // two of f1's three — the boundary the shared kernel's budget
+    // argument exists for.
+    const files: Record<string, FileFixture> = {
+      'f0.ts': { content: 'needle\nneedle\nneedle' },
+      'f1.ts': { content: 'needle\nneedle\nneedle' },
+      'f2.ts': { content: 'needle\nneedle\nneedle' },
+    };
+
+    const lazy = await grepSource(mockAdapter(files), ENV, URL, 'needle', {
+      store,
+      maxResults: 5,
+    });
+
+    expect(lazy).toEqual(await eagerGrep(files, 'needle', { maxResults: 5 }));
+    expect(lazy).toHaveLength(5);
+    expect(lazy.map((h) => h.itemId)).toEqual(['f0.ts', 'f0.ts', 'f0.ts', 'f1.ts', 'f1.ts']);
+  });
+
+  it('threads ignoreCase end-to-end — needle lowering happens at the grepSource level too', async () => {
+    const files: Record<string, FileFixture> = {
+      'a.ts': { content: 'has NEEDLE here' },
+      'b.ts': { content: 'has needle here' },
+      'c.ts': { content: 'no match' },
+    };
+
+    const lazy = await grepSource(mockAdapter(files), ENV, URL, 'NeEdLe', {
+      store,
+      ignoreCase: true,
+    });
+
+    expect(lazy).toEqual(await eagerGrep(files, 'NeEdLe', { ignoreCase: true }));
+    expect(lazy.map((h) => h.itemId)).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('threads contextLines end-to-end', async () => {
+    const files: Record<string, FileFixture> = {
+      'a.ts': { content: 'one\ntwo\nneedle\nfour\nfive' },
+    };
+
+    const lazy = await grepSource(mockAdapter(files), ENV, URL, 'needle', {
+      store,
+      contextLines: 1,
+    });
+
+    expect(lazy).toEqual(await eagerGrep(files, 'needle', { contextLines: 1 }));
+    expect(lazy[0].contextBefore).toEqual(['two']);
+    expect(lazy[0].contextAfter).toEqual(['four']);
+  });
+
+  it('bounds concurrent reads to `concurrency`, like warmSource', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const files: Record<string, FileFixture> = {};
+    // no matches anywhere, so the lazy pass cannot settle early and
+    // must stream the whole tree through the read-ahead window
+    for (let i = 0; i < 8; i++) files[`f${i}.ts`] = { content: 'x' };
+
+    await grepSource(
+      mockAdapter(files, async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+      }),
+      ENV,
+      URL,
+      'needle',
+      { store, concurrency: 3 }
+    );
+
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThan(1); // genuinely overlapped, not serial
+  });
+
+  it('drops a file whose read fails and still settles past it', async () => {
+    // f00 (first in order) errors; settlement must advance past the
+    // failure and the erroring file must contribute nothing.
+    const files: Record<string, FileFixture> = {
+      'f00.ts': { content: 'has needle but will error' },
+      'f01.ts': { content: 'has needle' },
+      'f02.ts': { content: 'also has needle' },
+    };
+
+    const hits = await grepSource(
+      mockAdapter(files, async (path) => {
+        if (path === 'f00.ts') throw new Error('read exploded');
+      }),
+      ENV,
+      URL,
+      'needle',
+      { store, maxResults: 1 }
+    );
+
+    expect(hits.map((h) => h.itemId)).toEqual(['f01.ts']);
+    expect(store.getContent({ sourceId: URL, version: '', itemId: 'f00.ts' })).toBeUndefined();
+  });
+
+  it('with a prefix, still searches pre-cached items outside it (contract: prefix-scoped warm + grep)', async () => {
+    // A prefix scopes what gets WARMED; grep then scans the whole
+    // store — so an already-cached item outside the prefix is
+    // searched, exactly as prefix-scoped warmSource + grep would.
+    store.setContent({ sourceId: URL, version: '', itemId: 'docs/z.ts' }, 'needle z', 'sha-z');
+
+    const hits = await grepSource(
+      mockAdapter({
+        'src/a.ts': { content: 'needle a' },
+        'lib/b.ts': { content: 'needle b (outside prefix, not cached — must NOT appear)' },
+      }),
+      ENV,
+      URL,
+      'needle',
+      { store, prefix: 'src' }
+    );
+
+    expect(hits.map((h) => h.itemId)).toEqual(['docs/z.ts', 'src/a.ts']);
+  });
+
+  it('returns an empty array when nothing in a fully-streamed tree matches', async () => {
+    const files: Record<string, FileFixture> = {};
+    for (let i = 0; i < 6; i++) files[`f${i}.ts`] = { content: 'nothing to see' };
+
+    const hits = await grepSource(mockAdapter(files), ENV, URL, 'needle', { store });
+
+    expect(hits).toEqual([]);
   });
 });

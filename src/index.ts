@@ -317,8 +317,10 @@ const DEFAULT_GREP_CONTEXT = 2;
 /** Match one item's content against the (pre-lowercased, when
  * case-insensitive) needle, producing at most `budget` hits. The
  * single matching kernel shared by the pure `grep` and the lazy
- * `grepSource` path, so the two produce identical hits by
- * construction. */
+ * `grepSource` path. Sharing it makes per-line matching identical,
+ * but the equal-hits contract also depends on the call sites: `grep`
+ * passes its remaining capacity as `budget`, while `grepSource`
+ * passes the full max and truncates in its assembly loop. */
 function matchContent(
   sourceId: string,
   itemId: string,
@@ -766,8 +768,9 @@ export async function warmSource(
  * are scheduled once `maxResults` hits have been collected from a
  * contiguous completed prefix of that order.
  *
- * **Contract: the hits returned are exactly what whole-tree
- * `warmSource` + `grep` would return for the same options** — early
+ * **Contract: the hits returned are exactly what `warmSource` +
+ * `grep` would return for the same options** (prefix included — a
+ * prefix-scoped call compares against a prefix-scoped warm) — early
  * termination changes how much is read, never what is returned. The
  * per-file rules are `warmSource`'s: binary + oversized files are
  * skipped, files the lazy pass does read are warmed into the store,
