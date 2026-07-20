@@ -35,11 +35,12 @@ export const ensureFork = github.ensureFork.bind(github);
 export const openPullRequest = github.openPullRequest.bind(github);
 export const getDefaultBranch = github.getDefaultBranch.bind(github);
 
-/** Cold-warm a whole GitHub repo into the `ContextStore` (github
- * binding of the generic `warmSource`). `sourceUrl` is the repo URL;
- * pass `ref` for a branch/sha (defaults to the repo default). Reads
- * are concurrency-bounded (default 8) to stay clear of API rate
- * limits — the same mechanism as fs, only the enumerate/read differ. */
+/** Cold-warm a GitHub repo into the `ContextStore` (github binding of
+ * the generic `warmSource`). `sourceUrl` is the repo URL; pass `ref`
+ * for a branch/sha (defaults to the repo default) and
+ * `WarmSourceOptions.prefix` to warm one subtree. Reads are
+ * concurrency-bounded (default 8) to stay clear of API rate limits —
+ * the same mechanism as fs, only the enumerate/read differ. */
 export function warmSource(
   env: SourceEnv,
   sourceUrl: string,
@@ -48,8 +49,11 @@ export function warmSource(
   return warmSourceGeneric(rawGithub, env, sourceUrl, options);
 }
 
-/** Cold grep over a whole GitHub repo: warm, then pure `grep` over the
- * warm cache (github binding of the generic `grepSource`). */
+/** Cold grep over a GitHub repo (github binding of the generic
+ * `grepSource`): lazy — reads files in deterministic search order and
+ * stops once `maxResults` is settled; hits are identical to
+ * warm-then-`grep`. `prefix` scopes which files are read — a real
+ * saving against API rate limits. */
 export function grepSource(
   env: SourceEnv,
   sourceUrl: string,

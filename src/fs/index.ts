@@ -37,9 +37,9 @@ export const ensureFork = fs.ensureFork.bind(fs);
 export const openPullRequest = fs.openPullRequest.bind(fs);
 export const getDefaultBranch = fs.getDefaultBranch.bind(fs);
 
-/** Cold-warm the whole local source into the `ContextStore` (fs
- * binding of the generic `warmSource`). `sourceUrl` is the absolute
- * root path. */
+/** Cold-warm the local source into the `ContextStore` (fs binding of
+ * the generic `warmSource`). `sourceUrl` is the absolute root path;
+ * scope with `WarmSourceOptions.prefix` to warm one subtree. */
 export function warmSource(
   env: SourceEnv,
   sourceUrl: string,
@@ -48,8 +48,10 @@ export function warmSource(
   return warmSourceGeneric(rawFs, env, sourceUrl, options);
 }
 
-/** Cold grep over the whole local source: warm, then pure `grep` over
- * the warm cache (fs binding of the generic `grepSource`). */
+/** Cold grep over the local source (fs binding of the generic
+ * `grepSource`): lazy — reads files in deterministic search order and
+ * stops once `maxResults` is settled; hits are identical to
+ * warm-then-`grep`. `prefix` scopes which files are read. */
 export function grepSource(
   env: SourceEnv,
   sourceUrl: string,

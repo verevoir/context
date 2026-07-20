@@ -314,6 +314,42 @@ export interface GrepOptions {
 const DEFAULT_GREP_MAX = 50;
 const DEFAULT_GREP_CONTEXT = 2;
 
+/** Match one item's content against the (pre-lowercased, when
+ * case-insensitive) needle, producing at most `budget` hits. The
+ * single matching kernel shared by the pure `grep` and the lazy
+ * `grepSource` path. Sharing it makes per-line matching identical,
+ * but the equal-hits contract also depends on the call sites: `grep`
+ * passes its remaining capacity (`max - hits.length`) per call, while
+ * `grepSource` passes the full `max` per file — so one file may yield
+ * up to `max` hits on its own — and applies the cap once, over the
+ * ordered accumulation, when assembling the settled prefix. */
+function matchContent(
+  sourceId: string,
+  itemId: string,
+  content: string,
+  needle: string,
+  ignoreCase: boolean,
+  context: number,
+  budget: number
+): GrepHit[] {
+  const hits: GrepHit[] = [];
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (hits.length >= budget) break;
+    const haystack = ignoreCase ? lines[i].toLowerCase() : lines[i];
+    if (!haystack.includes(needle)) continue;
+    hits.push({
+      sourceId,
+      itemId,
+      lineNumber: i + 1,
+      line: lines[i],
+      contextBefore: lines.slice(Math.max(0, i - context), i),
+      contextAfter: lines.slice(i + 1, i + 1 + context),
+    });
+  }
+  return hits;
+}
+
 /** Plain-substring search across cached content. Operates on items
  * the consumer has fetched into the store — does not fan out to
  * the underlying source. Pure local lookup. */
@@ -331,20 +367,9 @@ export function grep(pattern: string, scope: GrepScope, options: GrepOptions = {
       if (hits.length >= max) return hits;
       const content = store.getContent({ sourceId, version, itemId });
       if (content === undefined) continue;
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (hits.length >= max) return hits;
-        const haystack = ignoreCase ? lines[i].toLowerCase() : lines[i];
-        if (!haystack.includes(needle)) continue;
-        hits.push({
-          sourceId,
-          itemId,
-          lineNumber: i + 1,
-          line: lines[i],
-          contextBefore: lines.slice(Math.max(0, i - context), i),
-          contextAfter: lines.slice(i + 1, i + 1 + context),
-        });
-      }
+      hits.push(
+        ...matchContent(sourceId, itemId, content, needle, ignoreCase, context, max - hits.length)
+      );
     }
   }
   return hits;
@@ -536,7 +561,8 @@ export function wrapWithCache(
 }
 
 // ============================================================
-// warmSource — the one cache-warming mechanism, any file source
+// Cold ops — warmSource (the one eager cache-warming mechanism)
+// and the lazy per-file passes built beside it, any file source
 // ============================================================
 
 /** Files larger than this are skipped while warming — too big to be
@@ -633,6 +659,13 @@ export interface WarmSourceOptions {
   ref?: string;
   /** Max concurrent file reads. Default 8. */
   concurrency?: number;
+  /** Path prefix scoping which tree entries are considered — only
+   * entries at or under this directory are warmed. Normalised so
+   * `'src'` and `'src/'` select the same subtree, and matching is
+   * segment-aware (`'src'` does not cover `'srcx/…'`). Applied
+   * alongside `include` / `exclude`; omitted (or `''`) means the
+   * whole tree. */
+  prefix?: string;
   /** Glob patterns selecting which files to warm — a file is warmed
    * only if it matches at least one. Defaults to `DEFAULT_WARM_INCLUDE`
    * (`['**']`, i.e. everything). Supports `**` / `*` / `?`. */
@@ -645,14 +678,58 @@ export interface WarmSourceOptions {
   exclude?: readonly string[];
 }
 
+/** Normalise a `WarmSourceOptions.prefix`: trailing slashes are
+ * stripped so `'dir'` and `'dir/'` select the same subtree; `''`
+ * (or a bare `'/'`) means "no prefix filter" and normalises to
+ * `undefined`. */
+function normalisePrefix(prefix: string | undefined): string | undefined {
+  if (prefix === undefined) return undefined;
+  const p = prefix.replace(/\/+$/, '');
+  return p === '' ? undefined : p;
+}
+
+/** Segment-aware prefix test: the path is the prefix itself or lives
+ * under it as a directory — `'src'` covers `'src/a.ts'` but never
+ * `'srcx/a.ts'`. An `undefined` prefix covers everything. */
+function underPrefix(path: string, prefix: string | undefined): boolean {
+  return prefix === undefined || path === prefix || path.startsWith(`${prefix}/`);
+}
+
+/** The tree entries a warm pass would read: blobs under the
+ * (normalised) `prefix`, matching `include` and not `exclude`, within
+ * the size cap. Shared by `warmSource` and the lazy `grepSource` so
+ * eligibility can never drift between the two. */
+function eligibleBlobs(tree: RepoTree, options: WarmSourceOptions): string[] {
+  const include = options.include ?? DEFAULT_WARM_INCLUDE;
+  const exclude = options.exclude ?? DEFAULT_WARM_EXCLUDE;
+  const prefix = normalisePrefix(options.prefix);
+  return tree.entries
+    .filter(
+      (e) =>
+        e.type === 'blob' &&
+        underPrefix(e.path, prefix) &&
+        matchesAnyGlob(e.path, include) &&
+        !matchesAnyGlob(e.path, exclude) &&
+        !(e.size !== undefined && e.size > MAX_WARM_FILE_BYTES)
+    )
+    .map((e) => e.path);
+}
+
 /** Pull a whole file-source into the `ContextStore` — *the* cache-
  * warming mechanism, identical across file sources. What varies per
  * source is only how files are enumerated and read, which the
  * `SourceAdapter` abstracts (`getRepoTree` + `readFile`). Skips binary
  * + oversized files, reads up to `concurrency` at a time, and leaves
- * already-warm entries alone. Once warm, the pure cache-only ops
- * (`grep`, and `findSymbols` from `@verevoir/context/code`) work
- * across the whole source. */
+ * already-warm entries alone. Scope with `prefix` / `include` /
+ * `exclude` to warm a subtree or file-type slice instead of the whole
+ * tree. Once warm, the pure cache-only ops (`grep`, and `findSymbols`
+ * from `@verevoir/context/code`) work across everything warmed.
+ *
+ * Design stance: this is the *deliberate*, eager half of the cold-op
+ * pair — a long-session consumer warms up front (whole tree or a
+ * chosen prefix) and every later op is a pure cache hit. One-shot
+ * cold ops (`grepSource`) are lazy instead: they read only as much of
+ * the tree as the result needs. */
 export async function warmSource(
   adapter: SourceAdapter,
   env: SourceEnv,
@@ -664,24 +741,17 @@ export async function warmSource(
   const version = ref ?? '';
   const concurrency = options.concurrency ?? DEFAULT_WARM_CONCURRENCY;
 
-  const include = options.include ?? DEFAULT_WARM_INCLUDE;
-  const exclude = options.exclude ?? DEFAULT_WARM_EXCLUDE;
-  const wanted = (p: string): boolean => matchesAnyGlob(p, include) && !matchesAnyGlob(p, exclude);
-
   const tree = await adapter.getRepoTree(env, sourceUrl, ref);
-  const blobs = tree.entries.filter(
-    (e) =>
-      e.type === 'blob' && wanted(e.path) && !(e.size !== undefined && e.size > MAX_WARM_FILE_BYTES)
-  );
+  const blobs = eligibleBlobs(tree, options);
 
   let next = 0;
   async function worker(): Promise<void> {
     while (next < blobs.length) {
-      const entry = blobs[next++];
-      const key = { sourceId: sourceUrl, version, itemId: entry.path };
+      const path = blobs[next++];
+      const key = { sourceId: sourceUrl, version, itemId: path };
       if (store.getContent(key) !== undefined) continue;
       try {
-        const { content, sha } = await adapter.readFile(env, sourceUrl, entry.path, ref);
+        const { content, sha } = await adapter.readFile(env, sourceUrl, path, ref);
         if (looksBinary(content)) continue;
         store.setContent(key, content, sha);
       } catch {
@@ -693,9 +763,28 @@ export async function warmSource(
   await Promise.all(Array.from({ length: workers }, () => worker()));
 }
 
-/** Cold grep over any file source: `warmSource` the whole tree, then
- * run the pure `grep` over the now-warm cache for consistent,
- * formatted hits. */
+/** Cold grep over any file source — *lazily*. Files are processed in
+ * the deterministic search order (sorted item ids — the same order
+ * the pure `grep` scans a fully-warmed store) with the warm
+ * `concurrency` as a bounded read-ahead window, and no further reads
+ * are scheduled once `maxResults` hits have been collected from a
+ * contiguous completed prefix of that order.
+ *
+ * **Contract: the hits returned are exactly what `warmSource` +
+ * `grep` would return for the same options** (prefix included — a
+ * prefix-scoped call compares against a prefix-scoped warm) — early
+ * termination changes how much is read, never what is returned. The
+ * per-file rules are `warmSource`'s: binary + oversized files are
+ * skipped, files the lazy pass does read are warmed into the store,
+ * already-warm entries (and cached items outside the tree scope)
+ * serve from cache without a re-read, and unreadable files contribute
+ * nothing.
+ *
+ * Design stance: laziness lives in the cold-op path — a small /
+ * one-shot grep stops reading as soon as its result is settled. A
+ * deliberate `warmSource` stays whole-scope by choice, so
+ * long-session consumers that warm eagerly up front (the multi-day
+ * regime) are unaffected. */
 export async function grepSource(
   adapter: SourceAdapter,
   env: SourceEnv,
@@ -705,8 +794,76 @@ export async function grepSource(
 ): Promise<GrepHit[]> {
   const store = options.store ?? contextStore;
   const version = options.ref ?? '';
-  await warmSource(adapter, env, sourceUrl, options);
-  return grep(pattern, { sources: [{ sourceId: sourceUrl, version }] }, { ...options, store });
+  const max = options.maxResults ?? DEFAULT_GREP_MAX;
+  const context = options.contextLines ?? DEFAULT_GREP_CONTEXT;
+  const ignoreCase = options.ignoreCase ?? false;
+  const needle = ignoreCase ? pattern.toLowerCase() : pattern;
+  const concurrency = options.concurrency ?? DEFAULT_WARM_CONCURRENCY;
+
+  const tree = await adapter.getRepoTree(env, sourceUrl, options.ref);
+  const readable = new Set(eligibleBlobs(tree, options));
+  // The search space is exactly what a warm of the requested scope
+  // (the same prefix / include / exclude) would leave
+  // indexed: everything already cached for this (source, version)
+  // plus every eligible tree blob — in the sorted order `grep` scans.
+  const items = [...new Set([...store.listIndexedItems(sourceUrl, version), ...readable])].sort();
+
+  const results: GrepHit[][] = new Array(items.length);
+  const done: boolean[] = new Array(items.length).fill(false);
+  let next = 0;
+  let prefixEnd = 0; // items [0, prefixEnd) are all complete…
+  let prefixHits = 0; // …and hold this many hits between them.
+  // The result is settled once the contiguous completed prefix holds
+  // `max` hits: nothing an unread later item contains can surface.
+  // (Hits in a *non*-contiguous completion can't settle anything — an
+  // earlier still-pending item could displace them.)
+  const settled = (): boolean => prefixHits >= max;
+
+  async function matchItem(index: number): Promise<void> {
+    const itemId = items[index];
+    const key = { sourceId: sourceUrl, version, itemId };
+    let content = store.getContent(key);
+    if (content === undefined && readable.has(itemId)) {
+      try {
+        const r = await adapter.readFile(env, sourceUrl, itemId, options.ref);
+        if (!looksBinary(r.content)) {
+          store.setContent(key, r.content, r.sha);
+          content = r.content;
+        }
+      } catch {
+        // Raced (file changed/removed since enumeration) or unreadable.
+      }
+    }
+    results[index] =
+      content === undefined
+        ? []
+        : matchContent(sourceUrl, itemId, content, needle, ignoreCase, context, max);
+    done[index] = true;
+    while (prefixEnd < items.length && done[prefixEnd]) {
+      prefixHits += results[prefixEnd].length;
+      prefixEnd++;
+    }
+  }
+
+  async function worker(): Promise<void> {
+    while (!settled() && next < items.length) {
+      await matchItem(next++);
+    }
+  }
+  const workers = Math.max(1, Math.min(concurrency, items.length || 1));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+
+  // Assemble in item order; hits past `max` (and items never
+  // scheduled — all of which sort after the settling prefix) fall
+  // away exactly as `grep`'s own cap would drop them.
+  const hits: GrepHit[] = [];
+  for (let i = 0; i < items.length && hits.length < max; i++) {
+    for (const hit of results[i] ?? []) {
+      if (hits.length >= max) break;
+      hits.push(hit);
+    }
+  }
+  return hits;
 }
 
 // ============================================================
