@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 // shape that must hold — the same zero-dependency approach the other repos use.
 const yml = readFileSync(
   fileURLToPath(new URL('../.github/workflows/antagonistic-review.yml', import.meta.url)),
-  'utf8',
+  'utf8'
 );
 const flat = yml.replace(/\s+/g, ' ');
 
@@ -18,7 +18,7 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
     // tree, would be neither — and the tree one would also be PR-author supplied
     // on a pull_request_target run.
     expect(flat).toMatch(
-      /run: bash "\/home\/runner\/\.antagonistic-review-mcp\/scripts\/checkout-corpus\.sh"/,
+      /run: bash "\/home\/runner\/\.antagonistic-review-mcp\/scripts\/checkout-corpus\.sh"/
     );
     expect(flat).not.toMatch(/run: bash \.?\/?scripts\/checkout-corpus\.sh/);
   });
@@ -73,7 +73,7 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
       const sum = steps.reduce((total, step) => total + step, 0);
       expect(
         Number(envelope[1]),
-        `job '${job[1]}' envelope must exceed its ${sum}m of steps`,
+        `job '${job[1]}' envelope must exceed its ${sum}m of steps`
       ).toBeGreaterThan(sum);
       checked.push(job[1]);
     }
