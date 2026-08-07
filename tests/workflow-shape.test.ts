@@ -49,6 +49,26 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
     expect(flat).not.toMatch(/x-access-token:\$\{\{/);
   });
 
+  it('keeps CORPUS_TOKEN OUT of the review step, where a lens with Bash would find it', () => {
+    // The corpus step's comment names this as a deliberate property: the
+    // credential is scoped to the fetch, and the directory deliberately left
+    // behind for the lens to read must not contain a usable one. Nothing pinned
+    // it — the test above only asserts the token IS passed by env somewhere, so
+    // an edit that also propagated it into the review step's env would have
+    // stayed green while handing every lens a live credential.
+    const corpusAt = yml.indexOf('name: Check out the guardrails corpus');
+    const reviewAt = yml.indexOf('name: Adversarial review against the provisioned practices');
+    expect(corpusAt).toBeGreaterThan(-1);
+    expect(reviewAt).toBeGreaterThan(-1);
+
+    // Exactly one, and it sits inside the corpus step — a second occurrence
+    // anywhere, or this one drifting past the review step's start, fails.
+    const at = [...yml.matchAll(/^\s*CORPUS_TOKEN:/gm)].map((m) => m.index ?? -1);
+    expect(at).toHaveLength(1);
+    expect(at[0]).toBeGreaterThan(corpusAt);
+    expect(at[0]).toBeLessThan(reviewAt);
+  });
+
   it('points the reviewer at the SAME directory the checkout writes', () => {
     // Two literals that must agree. If they drift, the lens finds no corpus and
     // fails closed — safe, but it reads as a verdict on the change under review
