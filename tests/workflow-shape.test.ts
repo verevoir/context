@@ -32,6 +32,13 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
     const mcpAt = yml.indexOf('name: Pre-build the reviewer MCP');
     expect(corpusAt).toBeGreaterThan(-1);
     expect(reviewAt).toBeGreaterThan(-1);
+    // GUARD BEFORE COMPARE. `indexOf` returns -1 when the step is renamed, and
+    // `expect(anyFoundPosition).toBeGreaterThan(-1)` is true for every position
+    // there is — so without this line the ordering assertion below cannot fail
+    // for the one change it exists to catch. Verified by mutation: rename the
+    // step and this test fails; delete this line and the same rename passes.
+    // The two guards above had it; this one did not.
+    expect(mcpAt).toBeGreaterThan(-1);
     // After the MCP pre-build, because the script it runs lives in that clone.
     expect(corpusAt).toBeGreaterThan(mcpAt);
     expect(corpusAt).toBeLessThan(reviewAt);
@@ -40,6 +47,26 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
   it('passes the credential by environment, never in a URL or on argv', () => {
     expect(flat).toMatch(/CORPUS_TOKEN: \$\{\{ steps\.app-token\.outputs\.token \}\}/);
     expect(flat).not.toMatch(/x-access-token:\$\{\{/);
+  });
+
+  it('keeps CORPUS_TOKEN OUT of the review step, where a lens with Bash would find it', () => {
+    // The corpus step's comment names this as a deliberate property: the
+    // credential is scoped to the fetch, and the directory deliberately left
+    // behind for the lens to read must not contain a usable one. Nothing pinned
+    // it — the test above only asserts the token IS passed by env somewhere, so
+    // an edit that also propagated it into the review step's env would have
+    // stayed green while handing every lens a live credential.
+    const corpusAt = yml.indexOf('name: Check out the guardrails corpus');
+    const reviewAt = yml.indexOf('name: Adversarial review against the provisioned practices');
+    expect(corpusAt).toBeGreaterThan(-1);
+    expect(reviewAt).toBeGreaterThan(-1);
+
+    // Exactly one, and it sits inside the corpus step — a second occurrence
+    // anywhere, or this one drifting past the review step's start, fails.
+    const at = [...yml.matchAll(/^\s*CORPUS_TOKEN:/gm)].map((m) => m.index ?? -1);
+    expect(at).toHaveLength(1);
+    expect(at[0]).toBeGreaterThan(corpusAt);
+    expect(at[0]).toBeLessThan(reviewAt);
   });
 
   it('points the reviewer at the SAME directory the checkout writes', () => {
