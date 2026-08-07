@@ -32,6 +32,13 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
     const mcpAt = yml.indexOf('name: Pre-build the reviewer MCP');
     expect(corpusAt).toBeGreaterThan(-1);
     expect(reviewAt).toBeGreaterThan(-1);
+    // GUARD BEFORE COMPARE. `indexOf` returns -1 when the step is renamed, and
+    // `expect(anyFoundPosition).toBeGreaterThan(-1)` is true for every position
+    // there is — so without this line the ordering assertion below cannot fail
+    // for the one change it exists to catch. Verified by mutation: rename the
+    // step and this test fails; delete this line and the same rename passes.
+    // The two guards above had it; this one did not.
+    expect(mcpAt).toBeGreaterThan(-1);
     // After the MCP pre-build, because the script it runs lives in that clone.
     expect(corpusAt).toBeGreaterThan(mcpAt);
     expect(corpusAt).toBeLessThan(reviewAt);
