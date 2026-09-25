@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.0 — 2026-09-25
+
+- **New: `@verevoir/context/gitlab`** — cached GitLab source, the drop-in for `@verevoir/sources/gitlab` (new in sources 0.9.0) exactly as `/github` is for `@verevoir/sources/github`: `wrapWithCache(gitlab)` plus the destructured contract functions (`commitFiles` included), and gitlab bindings of `warmSource` / `grepSource` — lazy, early-terminating, prefix-scopable, and concurrency-bounded, which matters more here than on GitHub because gitlab.com rate-limits anonymous API reads tightly. `isGitlabUrl` / `parseGitlabProjectUrl` are re-exported so a router can route and read through one import. The cache adds nothing to the security surface: the adapter's host allowlist (gitlab.com + `GITLAB_HOSTS`, HTTPS only), origin pinning and Bearer-token handling sit behind every cache miss, and a test drives the facade at an unlisted host to prove it is refused with no request made.
+- **Bumps the `@verevoir/sources` devDependency `^0.7.0` → `^0.9.0`** for the `/gitlab` subpath. The peer range stays `*`; consumers of `/gitlab` need sources ≥ 0.9.0. **This release depends on sources 0.9.0 being published first** (verevoir/sources#23). **Not yet done on this branch:** the committed lockfile still resolves sources 0.7.0, so `npm ci` fails until the lockfile is regenerated against the published 0.9.0 — that regeneration is the precondition for merging, not something this entry reports as complete. Verified in the meantime against a local pack of the sources#23 branch: the full suite passed unchanged, including across sources 0.8.0's breaking fs change (a non-empty ref is refused) — nothing here passes a ref to the fs adapter.
+
+- **Security: dev-tree advisories fixed** (lockfile only, `npm audit fix`) — `nanoid` 3.3.17 → 3.3.19 (high: `<3.3.18`) and `@vitest/mocker` 4.1.7 → 4.1.11 (moderate). Both fail the CI `npm audit --audit-level=moderate` step on unmodified main; neither ships in the published package.
+
 ## 0.14.0 — 2026-07-19
 
 - **Lazy cold ops** (STDIO-584). Small one-shot operations no longer pay for a whole-tree warm:
