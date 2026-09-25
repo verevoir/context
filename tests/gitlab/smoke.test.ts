@@ -20,7 +20,13 @@ vi.mock('@verevoir/sources/gitlab', async () => {
   };
 });
 
-import { gitlab, readFile, commitFiles, isGitlabUrl } from '../../src/gitlab/index.js';
+import {
+  gitlab,
+  readFile,
+  commitFiles,
+  isGitlabUrl,
+  parseGitlabProjectUrl,
+} from '../../src/gitlab/index.js';
 import { contextStore } from '../../src/index.js';
 
 const ENV = { token: 't', forkOrg: 'o' };
@@ -61,9 +67,17 @@ describe('@verevoir/context/gitlab', () => {
     expect(typeof commitFiles).toBe('function');
   });
 
-  it('re-exports the URL helpers, so a router needs one import', () => {
+  it('re-exports isGitlabUrl, so a router can classify through this import', () => {
     expect(isGitlabUrl('https://gitlab.com/a/b')).toBe(true);
     expect(isGitlabUrl('https://gitlab.com.evil.io/a/b')).toBe(false);
+  });
+
+  it('re-exports parseGitlabProjectUrl, so a router can resolve project paths through this import', () => {
+    expect(parseGitlabProjectUrl('https://gitlab.com/group/sub/repo.git')).toEqual({
+      apiBase: 'https://gitlab.com/api/v4',
+      projectPath: 'group/sub/repo',
+    });
+    expect(() => parseGitlabProjectUrl('https://gitlab.com/onlygroup')).toThrow(/namespace/);
   });
 
   it('does not route around the adapter host guard: an unlisted host is refused with no request', async () => {
