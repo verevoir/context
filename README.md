@@ -145,7 +145,7 @@ const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minut
 
 ### Cold ops — eager warm, lazy grep
 
-`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs and github subpaths export bindings of both.
+`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs, github and gitlab subpaths export bindings of both.
 
 `WarmSourceOptions`: `store`, `ref`, `concurrency` (default 8), `prefix`, `include` / `exclude` globs. `prefix` scopes the op to one subtree (`'src'` and `'src/'` are equivalent; matching is segment-aware, so `'src'` never covers `'srcx/…'`).
 
