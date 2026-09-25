@@ -43,3 +43,33 @@ describe('@verevoir/context/gitlab grepSource (wiring)', () => {
     );
   });
 });
+
+describe('@verevoir/context/gitlab warmSource (wiring)', () => {
+  it('warms every file of the project into the store via the gitlab adapter', async () => {
+    const { warmSource } = await import('../../src/gitlab/index.js');
+    const { createContextStore } = await import('../../src/index.js');
+    const store = createContextStore();
+
+    await warmSource({ token: 'x', forkOrg: '' }, REPO, { store });
+
+    expect(store.getContent({ sourceId: REPO, version: '', itemId: 'src/app.ts' })).toBe(
+      'const token = secret()'
+    );
+    expect(store.getContent({ sourceId: REPO, version: '', itemId: 'README.md' })).toBe(
+      'just docs'
+    );
+  });
+
+  it('scopes the warm to a prefix, leaving files outside it unread', async () => {
+    const { warmSource } = await import('../../src/gitlab/index.js');
+    const { createContextStore } = await import('../../src/index.js');
+    const store = createContextStore();
+
+    await warmSource({ token: 'x', forkOrg: '' }, REPO, { store, prefix: 'src' });
+
+    expect(store.getContent({ sourceId: REPO, version: '', itemId: 'src/app.ts' })).toBe(
+      'const token = secret()'
+    );
+    expect(store.getContent({ sourceId: REPO, version: '', itemId: 'README.md' })).toBeUndefined();
+  });
+});

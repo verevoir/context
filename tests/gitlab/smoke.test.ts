@@ -23,6 +23,7 @@ vi.mock('@verevoir/sources/gitlab', async () => {
 import {
   gitlab,
   readFile,
+  isFresh,
   commitFiles,
   isGitlabUrl,
   parseGitlabProjectUrl,
@@ -42,6 +43,7 @@ describe('@verevoir/context/gitlab', () => {
       'readFile',
       'listFiles',
       'getRepoTree',
+      'isFresh',
       'writeFile',
       'commitFiles',
       'ensureBranch',
@@ -65,6 +67,11 @@ describe('@verevoir/context/gitlab', () => {
 
   it('exports the destructured writers, commitFiles included', () => {
     expect(typeof commitFiles).toBe('function');
+  });
+
+  it('exports a destructured isFresh bound to the cached adapter', () => {
+    expect(isFresh).not.toBe(gitlab.isFresh); // bound copy…
+    expect(isFresh.name).toBe(`bound ${gitlab.isFresh.name}`); // …of the aggregate's method
   });
 
   it('re-exports isGitlabUrl, so a router can classify through this import', () => {
