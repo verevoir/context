@@ -190,7 +190,55 @@ function jsNameOf(node: TSNode, kind: SymbolKind): string | null {
   return null;
 }
 
+/** React wrapper recognition is structural, like call resolution: no import binding
+ * analysis. Restrict member calls to React so unrelated objects' memo methods
+ * do not turn arbitrary values into component definitions. */
+function jsComponentArgument(node: TSNode): TSNode | null {
+  if (node.type !== 'call_expression') return null;
+  const fn = node.childForFieldName('function');
+  if (!fn) return null;
+  const name = fn.type === 'identifier' ? fn.text : fn.childForFieldName('property')?.text;
+  if (name !== 'forwardRef' && name !== 'memo') return null;
+  if (
+    fn.type !== 'identifier' &&
+    (fn.type !== 'member_expression' || fn.childForFieldName('object')?.text !== 'React')
+  )
+    return null;
+  return (
+    node.childForFieldName('arguments')?.namedChildren.find((c) => c.type !== 'comment') ?? null
+  );
+}
+
+function jsCallableValue(node: TSNode | null): boolean {
+  if (!node) return false;
+  if (node.type === 'arrow_function' || node.type === 'function_expression') return true;
+  const argument = jsComponentArgument(node);
+  return (
+    argument !== null &&
+    (argument.type === 'identifier' ||
+      argument.type === 'member_expression' ||
+      jsCallableValue(argument))
+  );
+}
+
+/** Only the first (render) argument inherits the component name. Wrapper
+ * evaluation and memo comparison callbacks retain their normal scopes. */
+function jsWrappedScopeName(node: TSNode): string | null {
+  let current = node;
+  let wrapped = false;
+  while (current.parent?.type === 'arguments') {
+    const call = current.parent.parent;
+    if (!call || jsComponentArgument(call) !== current) return null;
+    current = call;
+    wrapped = true;
+  }
+  const declaration = current.parent;
+  return wrapped && declaration?.type === 'variable_declarator' ? nameField(declaration) : null;
+}
+
 function jsScopeName(node: TSNode): string | null {
+  const componentName = jsWrappedScopeName(node);
+  if (componentName) return componentName;
   const nameFieldNode = node.childForFieldName('name');
   if (nameFieldNode) return nameFieldNode.text;
   const first = node.namedChildren[0];
@@ -249,9 +297,7 @@ const JS_KINDS: Readonly<Record<string, SymbolKind | KindResolver>> = {
   enum_declaration: 'enum',
   variable_declarator: (node) => {
     const value = node.childForFieldName('value');
-    return value && (value.type === 'arrow_function' || value.type === 'function_expression')
-      ? 'function'
-      : null;
+    return jsCallableValue(value) ? 'function' : null;
   },
 };
 
