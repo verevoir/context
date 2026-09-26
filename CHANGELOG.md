@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.2 — 2026-09-26
+
+- **C4**: JS/TS constructor invocations (`new X()`) and JSX component usages contribute call edges, including qualified names and cached `.tsx` / `.jsx` graph queries. Paired JSX tags count once; intrinsic/custom/namespaced tags and fragments are excluded. Resolution remains name-based.
+
 ## 0.14.0 — 2026-07-19
 
 - **Lazy cold ops** (STDIO-584). Small one-shot operations no longer pay for a whole-tree warm:
