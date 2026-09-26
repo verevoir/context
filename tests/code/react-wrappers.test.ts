@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { parseCode } from '../../src/code/index.js';
+import { edgesForItem, findSymbols, parseCode } from '../../src/code/index.js';
+import { createContextStore } from '../../src/index.js';
 
 describe('React component wrappers', () => {
+  it('finds a wrapped Button and its calls through the cached search APIs', () => {
+    const store = createContextStore();
+    const key = { sourceId: 'repo', version: 'main', itemId: 'src/Button.tsx' };
+    store.setContent(
+      key,
+      `export const Button = memo(forwardRef((props, ref) => {
+  useTheme();
+  return <button ref={ref}>{props.children}</button>;
+}));`
+    );
+
+    expect(findSymbols('Button', { sources: [key] }, { store, match: 'exact' })).toEqual([
+      {
+        sourceId: key.sourceId,
+        itemId: key.itemId,
+        name: 'Button',
+        kind: 'function',
+        startLine: 1,
+        endLine: 4,
+      },
+    ]);
+    expect(edgesForItem(store, key.sourceId, key.version, key.itemId)?.calls).toEqual([
+      { from: null, to: 'memo', line: 1 },
+      { from: null, to: 'forwardRef', line: 1 },
+      { from: 'Button', to: 'useTheme', line: 2 },
+    ]);
+  });
+
   it.each(['javascript', 'typescript', 'tsx'] as const)(
     'indexes wrapped definitions and their render calls in %s',
     (language) => {
