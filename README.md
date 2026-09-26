@@ -144,7 +144,7 @@ const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minut
 
 ### Cold ops — eager warm, lazy grep
 
-`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs and github subpaths export bindings of both.
+`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs and github subpaths export bindings of both. `warmSource` returns `{ truncated }`, preserving the source tree’s truncation flag so callers can report incomplete enumeration. The flag does not describe files skipped by filters, size limits, or read failures. Awaiting and discarding the result still works; callers explicitly typed as returning `Promise<void>` must discard the result in an async wrapper or update to `Promise<WarmSourceResult>`.
 
 `WarmSourceOptions`: `store`, `ref`, `concurrency` (default 8), `prefix`, `include` / `exclude` globs. `prefix` scopes the op to one subtree (`'src'` and `'src/'` are equivalent; matching is segment-aware, so `'src'` never covers `'srcx/…'`).
 

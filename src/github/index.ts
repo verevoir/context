@@ -18,6 +18,7 @@ import {
   type GrepHit,
   type GrepOptions,
   type WarmSourceOptions,
+  type WarmSourceResult,
 } from '../index.js';
 
 export const github = wrapWithCache(rawGithub);
@@ -45,7 +46,7 @@ export function warmSource(
   env: SourceEnv,
   sourceUrl: string,
   options: WarmSourceOptions = {}
-): Promise<void> {
+): Promise<WarmSourceResult> {
   return warmSourceGeneric(rawGithub, env, sourceUrl, options);
 }
 
