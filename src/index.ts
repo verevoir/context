@@ -29,13 +29,14 @@ export type SymbolKind = 'function' | 'class' | 'method' | 'interface' | 'type' 
 // Code-graph edge types (import + call edges)
 // ============================================================
 
-/** One `import … from '…'` statement in a source file. */
+/** One import or re-export dependency on another module in a source file. */
 export interface ImportEdge {
   /** Module specifier string (e.g. `'./auth.js'`, `'react'`). */
   module: string;
   /** Imported identifiers: named bindings, the default import name,
    * and namespace alias (`* as X`). Empty for bare side-effect
-   * imports (`import './polyfill'`). */
+   * imports (`import './polyfill'`) and wildcard re-exports. Re-exports
+   * use the exported name or alias (e.g. `export { x as y }` → `y`). */
   names: string[];
   /** 1-indexed line of the import statement. */
   line: number;

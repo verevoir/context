@@ -208,14 +208,17 @@ function collectImportNames(node: TSNode, out: string[]): void {
     case 'identifier':
       out.push(node.text);
       break;
+    case 'namespace_export':
     case 'namespace_import': {
       const alias = node.namedChildren[0];
       if (alias && alias.type === 'identifier') out.push(alias.text);
       break;
     }
+    case 'export_clause':
     case 'named_imports':
       for (const child of node.namedChildren) collectImportNames(child, out);
       break;
+    case 'export_specifier':
     case 'import_specifier': {
       const alias = node.childForFieldName('alias');
       const name = alias ?? node.childForFieldName('name');
@@ -232,6 +235,8 @@ function collectImportNames(node: TSNode, out: string[]): void {
 
 function jsImports(node: TSNode): ImportEdge[] {
   const moduleNode = node.childForFieldName('source');
+  // Local exports introduce no dependency on another module.
+  if (node.type === 'export_statement' && !moduleNode) return [];
   const module = moduleNode ? stripQuotes(moduleNode.text) : '';
   const names: string[] = [];
   for (const child of node.namedChildren) collectImportNames(child, names);
@@ -272,7 +277,7 @@ function jsConfig(grammar: unknown): LanguageConfig {
     scopeName: jsScopeName,
     callNodeTypes: new Set(['call_expression']),
     calleeOf: functionFieldCallee('member_expression', 'property'),
-    importNodeTypes: new Set(['import_statement']),
+    importNodeTypes: new Set(['import_statement', 'export_statement']),
     importsOf: jsImports,
   };
 }
@@ -630,7 +635,7 @@ export function detectLanguage(itemId: string): SupportedLanguage | null {
  * bodies are skipped.
  *
  * Edges:
- * - imports: each import/using/include → module + bound names.
+ * - imports: each import/using/include or JS/TS re-export → module + names.
  * - calls: every call expression anywhere in the tree. Callee
  *   resolution is name-based only (no type resolution — approximate is
  *   expected). `CallEdge.from` names the immediately-enclosing
@@ -700,7 +705,8 @@ function walkEdges(
 ): void {
   if (cfg.importNodeTypes.has(node.type)) {
     for (const edge of cfg.importsOf(node)) imports.push(edge);
-    return; // import nodes don't contain calls
+    // Export declarations may contain function bodies or initializer calls.
+    if (node.type !== 'export_statement') return;
   }
 
   if (cfg.callNodeTypes.has(node.type)) {
