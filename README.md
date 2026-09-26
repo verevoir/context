@@ -146,6 +146,10 @@ const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minut
 
 `warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs and github subpaths export bindings of both.
 
+The **fs bindings** validate cached files on every `warmSource` / `grepSource` call. Changed or deleted files lose their cached content, symbols, and edges; eligible changed files are read again by the search. Validation uses mtime and size, with a content-hash check when a cache entry has no recorded filesystem metadata (including restored snapshots). Unchanged entries retain their parsed symbols and edges. Edits that preserve both mtime and size are not detected by the stat fast path.
+
+For current local symbols or code-graph results, call the fs `warmSource` before each query, then use `findSymbols` / `edgesForItem`. The synchronous `grep`, `findSymbols`, and `edgesForItem` remain pure cache operations. The generic root cold ops remain adapter-neutral; use the fs subpath bindings to get automatic filesystem validation. Validation covers all cached files for the requested source/ref, including deletions outside a requested prefix and files absent from a truncated tree; changed entries outside the eligible scope are invalidated but not reloaded. There is no filesystem snapshot guarantee for edits racing a search.
+
 `WarmSourceOptions`: `store`, `ref`, `concurrency` (default 8), `prefix`, `include` / `exclude` globs. `prefix` scopes the op to one subtree (`'src'` and `'src/'` are equivalent; matching is segment-aware, so `'src'` never covers `'srcx/…'`).
 
 The two ops split eager vs lazy deliberately:
