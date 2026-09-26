@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.1 — 2026-09-26
+
+- **C3**: JS/TS component definitions wrapped in `forwardRef` or `memo`, including nested and `React.*` forms, are indexed. Calls inside inline render callbacks belong to the component; wrapper evaluation and comparator callbacks keep their existing scopes. Recognition is structural, without import binding or type resolution.
+
 ## 0.14.0 — 2026-07-19
 
 - **Lazy cold ops** (STDIO-584). Small one-shot operations no longer pay for a whole-tree warm:
