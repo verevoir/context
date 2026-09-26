@@ -176,6 +176,58 @@ const processItems = (items: string[]) => {
     expect(tos).toContain('deepest');
   });
 
+  it.each(['typescript', 'javascript', 'tsx'] as const)(
+    'records constructor invocations and their nested calls in %s',
+    (language) => {
+      const { edges } = parseCode(
+        language,
+        [
+          'new SpineCalculationService();',
+          'function create() {',
+          '  return new services.SpineCalculationService(new Dependency(), setup());',
+          '}',
+        ].join('\n')
+      );
+      expect(edges.calls).toEqual([
+        { from: null, to: 'SpineCalculationService', line: 1 },
+        { from: 'create', to: 'SpineCalculationService', line: 3 },
+        { from: 'create', to: 'Dependency', line: 3 },
+        { from: 'create', to: 'setup', line: 3 },
+      ]);
+    }
+  );
+
+  it('records JSX component usages once, with their enclosing symbol and line', () => {
+    const { edges } = parseCode(
+      'tsx',
+      [
+        'const root = <Button />;',
+        'const App = () => (',
+        '  <Panel>',
+        '    <ui.Button onClick={makeHandler()} />',
+        '    <ui.layout.Card><Button /></ui.layout.Card>',
+        '  </Panel>',
+        ');',
+      ].join('\n')
+    );
+    expect(edges.calls).toEqual([
+      { from: null, to: 'Button', line: 1 },
+      { from: 'App', to: 'Panel', line: 3 },
+      { from: 'App', to: 'Button', line: 4 },
+      { from: 'App', to: 'makeHandler', line: 4 },
+      { from: 'App', to: 'Card', line: 5 },
+      { from: 'App', to: 'Button', line: 5 },
+    ]);
+  });
+
+  it('ignores JSX intrinsic tags, custom elements, namespaces and fragments', () => {
+    const { edges } = parseCode(
+      'tsx',
+      'const App = () => <><div><button /><my-widget /><My-widget /><svg:path /></div></>;'
+    );
+    expect(edges.calls).toEqual([]);
+  });
+
   it('works on JavaScript (no TS annotations)', () => {
     const source = `
 import { helper } from './util.js';
@@ -290,6 +342,21 @@ topLevelCall();
     expect(cached).toBeDefined();
     expect(cached!.imports[0]?.module).toBe('./x.js');
   });
+
+  it.each(['src/app.tsx', 'src/app.jsx'])(
+    'exposes constructor and component callers through cached edges for %s',
+    (itemId) => {
+      const store = createContextStore();
+      const key = { sourceId: 'repo', version: 'main', itemId };
+      store.setContent(key, 'function App() { const service = new Service(); return <Button />; }');
+      const edges = edgesForItem(store, 'repo', 'main', itemId);
+      expect(edges?.calls).toEqual([
+        { from: 'App', to: 'Service', line: 1 },
+        { from: 'App', to: 'Button', line: 1 },
+      ]);
+      expect(store.getEdges(key)).toEqual(edges);
+    }
+  );
 
   it('serves edges from cache on the second call (no re-parse)', () => {
     const store = createContextStore();
