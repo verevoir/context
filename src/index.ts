@@ -650,6 +650,13 @@ function matchesAnyGlob(path: string, globs: readonly string[]): boolean {
   return globs.some((g) => globToRegExp(g).test(path));
 }
 
+/** Metadata from the source tree used by a completed warm pass. */
+export interface WarmSourceResult {
+  /** True when the source adapter returned an incomplete tree. This
+   * describes enumeration, not files skipped by filters or read errors. */
+  truncated: boolean;
+}
+
 export interface WarmSourceOptions {
   /** Store to warm. Defaults to the module's singleton. */
   store?: ContextStore;
@@ -735,7 +742,7 @@ export async function warmSource(
   env: SourceEnv,
   sourceUrl: string,
   options: WarmSourceOptions = {}
-): Promise<void> {
+): Promise<WarmSourceResult> {
   const store = options.store ?? contextStore;
   const ref = options.ref;
   const version = ref ?? '';
@@ -761,6 +768,7 @@ export async function warmSource(
   }
   const workers = Math.max(1, Math.min(concurrency, blobs.length || 1));
   await Promise.all(Array.from({ length: workers }, () => worker()));
+  return { truncated: tree.truncated };
 }
 
 /** Cold grep over any file source — *lazily*. Files are processed in

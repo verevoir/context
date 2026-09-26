@@ -69,6 +69,25 @@ beforeEach(() => {
 });
 
 describe('warmSource (generic, adapter-driven)', () => {
+  it.each([false, true])(
+    'returns tree truncation (%s) even with no eligible files',
+    async (truncated) => {
+      const adapter = mockAdapter({});
+      adapter.getRepoTree = async () => ({ entries: [], truncated });
+
+      expect(await warmSource(adapter, ENV, URL, { store })).toEqual({ truncated });
+    }
+  );
+
+  it('preserves truncation while warming the available files', async () => {
+    const adapter = mockAdapter({ 'a.ts': { content: 'available' } });
+    const getTree = adapter.getRepoTree.bind(adapter);
+    adapter.getRepoTree = async (...args) => ({ ...(await getTree(...args)), truncated: true });
+
+    expect(await warmSource(adapter, ENV, URL, { store })).toEqual({ truncated: true });
+    expect(store.getContent({ sourceId: URL, version: '', itemId: 'a.ts' })).toBe('available');
+  });
+
   it('warms text blobs, skips binary + oversized, then grep finds matches', async () => {
     const adapter = mockAdapter({
       'a.ts': { content: 'has needle here' },
