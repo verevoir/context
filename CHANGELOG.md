@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.3 — 2026-09-26
+
+- **C5**: JS/TS re-exports contribute import edges, so named, wildcard, namespace and type-only barrel exports participate in imported-by queries. Names use exported aliases; wildcard re-exports have no explicit names. Local exports add no dependency and exported declarations retain their call edges.
+
 ## 0.14.0 — 2026-07-19
 
 - **Lazy cold ops** (STDIO-584). Small one-shot operations no longer pay for a whole-tree warm:
