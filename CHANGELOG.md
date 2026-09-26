@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.1 — 2026-09-26
+
+- **C1**: Local fs `warmSource` / `grepSource` validate cached files on every call using mtime and size, removing changed or deleted content and derived symbols/edges. Entries without a known stat fingerprint receive an initial content-hash check. Call fs `warmSource` before each local symbol/graph query; pure cache operations and generic adapter-neutral cold ops remain unchanged. Changes preserving both mtime and size are not detected after the initial hash check.
+
 ## 0.14.0 — 2026-07-19
 
 - **Lazy cold ops** (STDIO-584). Small one-shot operations no longer pay for a whole-tree warm:
