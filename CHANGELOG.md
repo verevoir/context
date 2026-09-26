@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.0 — 2026-09-26
+
+- **C2**: `warmSource` now returns `WarmSourceResult` (`{ truncated: boolean }`) from the generic, fs, and github APIs, preserving the source tree enumeration flag even for empty/filtered trees. The flag does not report skipped or unreadable files. Typing change: consumers explicitly returning `Promise<void>` must discard the result or adopt `Promise<WarmSourceResult>`; ordinary await-and-discard usage remains valid.
+
 ## 0.14.0 — 2026-07-19
 
 - **Lazy cold ops** (STDIO-584). Small one-shot operations no longer pay for a whole-tree warm:
