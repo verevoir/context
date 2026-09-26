@@ -41,7 +41,8 @@ export interface ImportEdge {
   line: number;
 }
 
-/** One call site inside a source file. Name-based, no type
+/** One call site inside a source file, including JS/TS constructor
+ * invocations and JSX component usages. Name-based, no type
  * resolution — approximate is expected and fine. */
 export interface CallEdge {
   /** Name of the enclosing symbol (function / method / class), or
@@ -50,7 +51,7 @@ export interface CallEdge {
   /** Bare callee name. For member calls (`a.b()`) this is the
    * property name (`b`); for plain calls it is the identifier. */
   to: string;
-  /** 1-indexed line of the call expression. */
+  /** 1-indexed line of the call expression or JSX opening tag. */
   line: number;
 }
 

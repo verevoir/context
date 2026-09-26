@@ -148,15 +148,16 @@ function nameField(node: TSNode): string | null {
   return n ? n.text : null;
 }
 
-/** Build a callee resolver for grammars whose call node has a
- * `function` field that is either a plain identifier or a member /
+/** Build a callee resolver for grammars whose call target field
+ * (usually `function`) is either a plain identifier or a member /
  * attribute / selector access whose property lives in `propField`. */
 function functionFieldCallee(
   memberType: string,
-  propField: string
+  propField: string,
+  targetField = 'function'
 ): (call: TSNode) => string | null {
   return (call: TSNode): string | null => {
-    const fn = call.childForFieldName('function');
+    const fn = call.childForFieldName(targetField);
     if (!fn) return null;
     if (fn.type === 'identifier') return fn.text;
     if (fn.type === memberType) {
@@ -173,6 +174,25 @@ function functionFieldCallee(
 }
 
 // ── JavaScript / TypeScript ─────────────────────────────────
+
+const jsFunctionCallee = functionFieldCallee('member_expression', 'property');
+const jsConstructorCallee = functionFieldCallee('member_expression', 'property', 'constructor');
+
+function jsCalleeOf(node: TSNode): string | null {
+  if (node.type === 'call_expression') return jsFunctionCallee(node);
+  if (node.type === 'new_expression') return jsConstructorCallee(node);
+
+  const name = node.childForFieldName('name');
+  // JSX fragments, intrinsic elements and namespaced tags are not component calls.
+  if (!name) return null;
+  if (name.type === 'identifier') {
+    return /^[a-z]/.test(name.text) || name.text.includes('-') ? null : name.text;
+  }
+  if (name.type === 'member_expression') {
+    return name.childForFieldName('property')?.text ?? null;
+  }
+  return null;
+}
 
 /** JS/TS name resolution — `name` field, method `property_identifier`
  * fallback, and `const x = () => {}` (name on the declarator). */
@@ -270,8 +290,13 @@ function jsConfig(grammar: unknown): LanguageConfig {
     nameOf: jsNameOf,
     scopeNodeTypes: JS_SCOPE_NODES,
     scopeName: jsScopeName,
-    callNodeTypes: new Set(['call_expression']),
-    calleeOf: functionFieldCallee('member_expression', 'property'),
+    callNodeTypes: new Set([
+      'call_expression',
+      'new_expression',
+      'jsx_opening_element',
+      'jsx_self_closing_element',
+    ]),
+    calleeOf: jsCalleeOf,
     importNodeTypes: new Set(['import_statement']),
     importsOf: jsImports,
   };
@@ -631,7 +656,8 @@ export function detectLanguage(itemId: string): SupportedLanguage | null {
  *
  * Edges:
  * - imports: each import/using/include → module + bound names.
- * - calls: every call expression anywhere in the tree. Callee
+ * - calls: every call expression anywhere in the tree, including JS/TS
+ *   constructor invocations and JSX component usages. Callee
  *   resolution is name-based only (no type resolution — approximate is
  *   expected). `CallEdge.from` names the immediately-enclosing
  *   declaration, or `null` for module top-level calls. */
