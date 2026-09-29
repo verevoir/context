@@ -19,6 +19,7 @@ Direct in-process consumption (the usage shown below) is for: writing your own M
 - `@verevoir/context` — core `ContextStore` (content + symbol cache), `grep` over cached content, the generic `warmSource` / `grepSource` cold ops (see [Cold ops](#cold-ops--eager-warm-lazy-grep)), `wrapWithCache` decorator that adds read-through caching to any `@verevoir/sources` adapter, `wrapWorkflowWithCache` decorator that does the same for any `@verevoir/workflows` adapter, `IndexKey` + `SymbolEntry` types. No external dependencies; the decorators type-check against `@verevoir/sources` / `@verevoir/workflows` but don't import them at runtime unless you call them.
 - `@verevoir/context/code` — tree-sitter symbol extraction (`parseSymbols`, `detectLanguage`) + `findSymbols` over the store. Optional peer deps on tree-sitter packages.
 - `@verevoir/context/github` — cached GitHub source. Drop-in replacement for `@verevoir/sources/github` that adds read-through caching. Identical contract.
+- `@verevoir/context/gitlab` — cached GitLab source (gitlab.com + `GITLAB_HOSTS` instances). Drop-in replacement for `@verevoir/sources/gitlab` that adds read-through caching, plus gitlab bindings of `warmSource` / `grepSource`; re-exports `isGitlabUrl` / `parseGitlabProjectUrl` for routers. Identical contract; the adapter's host allowlist and token handling are unchanged behind the cache. Needs `@verevoir/sources@^0.9.0`.
 - `@verevoir/context/fs` — cached local-filesystem source. Drop-in replacement for `@verevoir/sources/fs` that adds read-through caching. Identical contract.
 - `@verevoir/context/notion` — cached Notion source. Drop-in replacement for `@verevoir/sources/notion` that adds read-through caching. Identical contract.
 
@@ -144,7 +145,7 @@ const lazy = wrapWithCache(github, { validationTtlMs: 60_000 }); // once a minut
 
 ### Cold ops — eager warm, lazy grep
 
-`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs and github subpaths export bindings of both.
+`warmSource(adapter, env, sourceUrl, options)` pulls a file source into the store (enumerate via `getRepoTree`, bounded-concurrency reads, skipping binary + oversized files and already-warm entries) so the pure cache-only ops — `grep`, `findSymbols` — then work across everything warmed. `grepSource(adapter, env, sourceUrl, pattern, options)` is cold grep over the same eligibility rules. The fs, github and gitlab subpaths export bindings of both.
 
 `WarmSourceOptions`: `store`, `ref`, `concurrency` (default 8), `prefix`, `include` / `exclude` globs. `prefix` scopes the op to one subtree (`'src'` and `'src/'` are equivalent; matching is segment-aware, so `'src'` never covers `'srcx/…'`).
 
