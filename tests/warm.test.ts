@@ -3,6 +3,7 @@ import {
   warmSource,
   grepSource,
   grep,
+  wrapWithCache,
   createContextStore,
   DEFAULT_WARM_EXCLUDE,
   type ContextStore,
@@ -176,6 +177,83 @@ describe('warmSource (generic, adapter-driven)', () => {
       { store: store2, include: ['**/*.ts'] }
     );
     expect(hits.map((h) => h.itemId).sort()).toEqual(['src/a.ts', 'src/deep/c.ts']);
+  });
+});
+
+/** `@verevoir/sources` >= 0.11's real `readFile` shape -- a
+ * discriminated union on `kind`, rather than the bare `{content,
+ * sha}` this package's devDependency (an older sources release)
+ * still types. Fixtures for this behaviour return the real >= 0.11
+ * shape and are cast to `SourceAdapter`, the same way `mockAdapter`
+ * above is cast for its own loosely-typed stub. */
+type V11Fixture = { content: string } | { binary: true; mediaType: string; size: number };
+
+function v11Adapter(files: Record<string, V11Fixture>): SourceAdapter {
+  const unused = () => {
+    throw new Error('not exercised by this fixture');
+  };
+  const adapter = {
+    async getRepoTree(): Promise<RepoTree> {
+      const entries: TreeEntry[] = Object.keys(files).map((path) => ({
+        path,
+        type: 'blob',
+        sha: '',
+      }));
+      return { entries, truncated: false };
+    },
+    async readFile(_e: unknown, _u: string, path: string) {
+      const f = files[path];
+      if (!f) throw new Error(`not found: ${path}`);
+      if ('binary' in f) {
+        return { kind: 'binary', mediaType: f.mediaType, size: f.size, bytes: new Uint8Array() };
+      }
+      return { kind: 'found', content: f.content, sha: `sha-${path}` };
+    },
+    listFiles: unused,
+    getDefaultBranch: unused,
+    isFresh: unused,
+    writeFile: unused,
+    ensureBranch: unused,
+    ensureFork: unused,
+    openPullRequest: unused,
+  };
+  return adapter as unknown as SourceAdapter;
+}
+
+describe('warmSource / grepSource — binary passthrough (sources >= 0.11)', () => {
+  it('warmSource skips a binary file, and a direct readFile through wrapWithCache afterwards still returns kind: "binary"', async () => {
+    const adapter = v11Adapter({
+      'README.md': { content: 'has needle here' },
+      'logo.png': { binary: true, mediaType: 'image/png', size: 42 },
+    });
+    const isolated = createContextStore();
+
+    await warmSource(adapter, ENV, URL, { store: isolated });
+
+    expect(isolated.getContent({ sourceId: URL, version: '', itemId: 'logo.png' })).toBeUndefined();
+
+    const cached = wrapWithCache(adapter, { store: isolated });
+    const result = await cached.readFile(ENV, URL, 'logo.png');
+
+    expect((result as unknown as { kind: string }).kind).toBe('binary');
+  });
+
+  it('grepSource skips a binary file while matching text ones, and a direct readFile afterwards still returns kind: "binary"', async () => {
+    const adapter = v11Adapter({
+      'README.md': { content: 'has needle here' },
+      'logo.png': { binary: true, mediaType: 'image/png', size: 42 },
+    });
+    const isolated = createContextStore();
+
+    const hits = await grepSource(adapter, ENV, URL, 'needle', { store: isolated });
+
+    expect(hits.map((h) => h.itemId)).toEqual(['README.md']);
+    expect(isolated.getContent({ sourceId: URL, version: '', itemId: 'logo.png' })).toBeUndefined();
+
+    const cached = wrapWithCache(adapter, { store: isolated });
+    const result = await cached.readFile(ENV, URL, 'logo.png');
+
+    expect((result as unknown as { kind: string }).kind).toBe('binary');
   });
 });
 
