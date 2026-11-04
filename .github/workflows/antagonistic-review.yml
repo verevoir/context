@@ -85,8 +85,8 @@ jobs:
     # an invariant; the list below is complete and adds up.
     #
     #   mint 2 + preflight 2 + checkout 5 + empty-diff 1 + head-fetch 3 +
-    #   resolve-merge-base 2 + url-rewrite 1 + MCP pre-build 10 + corpus 3 +
-    #   model 12 + publish 5 = 46m
+    #   resolve-merge-base 2 + url-rewrite 1 + MCP pre-build 10 + pin-lag check 1 +
+    #   corpus 3 + model 12 + publish 5 = 47m, inside the 55m envelope below.
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -262,29 +262,33 @@ jobs:
 
       - name: Warn when the reviewer pin lags a capabilities release
         # Advisory, once per review (one lens leg), and NEVER fails the review.
+        # ONE bounded git request, zero REST calls: the answer is the same for every PR,
+        # and the App installation's 5000/hr REST budget is shared fleet-wide and has
+        # been exhausted before (STDIO-663, see the corpus step). It reuses the
+        # reviewer-MCP clone's repo-local http.extraheader, so no token is in a URL or
+        # in argv. No --refs: capabilities tags are annotated, so the commit is the
+        # peeled ^{} line, and that is what CAPS_SHA names.
         if: matrix.lens == 'correctness'
         continue-on-error: true
-        timeout-minutes: 2
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        timeout-minutes: 1
         run: |
           set +e
-          tags=$(gh api --paginate repos/verevoir/capabilities/tags --jq '.[]|"\(.name) \(.commit.sha)"' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+ ' | sort -V)
+          D="/home/runner/.antagonistic-review-mcp" # the reviewer-MCP clone from the pre-build step
+          refs=$(timeout 30 git -C "$D" ls-remote --tags origin 'v*' 2>/dev/null)
+          # "<tag> <commit>", annotated tags resolved to their peeled commit, in semver order.
+          tags=$(printf '%s\n' "$refs" | awk 'NF==2{n=$2; sub("^refs/tags/","",n); p=sub(/\^\{\}$/,"",n); if (p || !(n in c)) c[n]=$1} END{for (n in c) print n" "c[n]}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+ ' | sort -V)
           latest=${tags##*$'\n'}; lt=${latest%% *}; ls=${latest##* }
           if [ -z "$lt" ] || [ -z "$CAPS_SHA" ]; then
             echo "::warning title=Reviewer pin::couldn't check pin currency"; echo "reviewer capabilities: couldn't check pin currency" >> "$GITHUB_STEP_SUMMARY"; exit 0
           fi
-          pt=$(echo "$tags" | awk -v s="$CAPS_SHA" '$2==s{print $1}' | tail -1)
           if [ "$ls" = "$CAPS_SHA" ]; then echo "reviewer capabilities pinned at $lt (${CAPS_SHA:0:7}), the latest release." >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          n=$(echo "$tags" | awk -v p="$pt" 'f{c++} $1==p{f=1} END{print c+0}')
-          pd=$(gh api "repos/verevoir/capabilities/commits/$CAPS_SHA" --jq .commit.committer.date); ld=$(gh api "repos/verevoir/capabilities/commits/$ls" --jq .commit.committer.date)
-          ps_=$(date -d "$pd" +%s 2>/dev/null); ls_=$(date -d "$ld" +%s 2>/dev/null)
-          if [ -z "$ps_" ] || [ -z "$ls_" ]; then
-            echo "::warning title=Reviewer pin::couldn't check pin currency"; echo "reviewer capabilities: couldn't check pin currency" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          pt=$(printf '%s\n' "$tags" | awk -v s="$CAPS_SHA" '$2==s{print $1}' | tail -1)
+          if [ -n "$pt" ]; then
+            n=$(printf '%s\n' "$tags" | awk -v p="$pt" 'f{c++} $1==p{f=1} END{print c+0}')
+            msg="reviewer capabilities pinned at $pt (${CAPS_SHA:0:7}); latest is $lt, $n releases behind. Bump CAPS_SHA."
+          else
+            msg="reviewer capabilities pinned at an untagged commit (${CAPS_SHA:0:7}); latest is $lt. Pin a release tag's commit."
           fi
-          days=$(( (ls_ - ps_) / 86400 ))
-          [ "$days" -ge 0 ] || { echo "reviewer capabilities pinned at ${pt:-${CAPS_SHA:0:7}}, not behind $lt." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
-          msg="reviewer capabilities pinned at ${pt:-untagged} (${CAPS_SHA:0:7}); latest is $lt, released $days days later${pt:+, $n releases behind}. Bump CAPS_SHA."
           echo "::warning title=Reviewer pin lags a release::$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
