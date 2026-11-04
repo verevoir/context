@@ -47,3 +47,20 @@ jobs:
           echo "Version bumped $base_ver -> $head_ver."
         env:
           BASE: ${{ github.base_ref }}
+
+  # The review: governance's reusable review (ADR 009), the same lens panel
+  # aigency-runtime-v2 and aigency-work run. It replaces this repo's seeded
+  # antagonistic-review.yml. Pull requests only, after ci passes, so a red build
+  # never spends a review. contents: read only: it ingests a contributor-written
+  # diff and title, and a review that cannot write to the PR cannot be made to.
+  # @main is deliberate and is the exception to SHA-pinning: a fix to the
+  # lens set or runner reaches every repository on its next run.
+  review:
+    needs: ci
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: verevoir/aigency-governance/.github/workflows/review.yml@main
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
