@@ -46,7 +46,7 @@ describe('cold find_symbol — warmSource + findSymbols', () => {
     // Cold: nothing parsed/warmed yet.
     expect(findSymbols('Widget', scope(), { store, match: 'exact' })).toEqual([]);
 
-    await warmSource(ENV, root, { store });
+    expect(await warmSource(ENV, root, { store })).toEqual({ truncated: false });
 
     const hits = findSymbols('Widget', scope(), { store, match: 'exact' });
     expect(hits).toHaveLength(1);

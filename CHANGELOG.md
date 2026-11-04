@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-11-04
 
+- **C2**: `warmSource` now returns `WarmSourceResult` (`{ truncated: boolean }`) from the generic, fs, and github APIs, preserving the source tree enumeration flag even for empty/filtered trees. The flag does not report skipped or unreadable files. Typing change: consumers explicitly returning `Promise<void>` must discard the result or adopt `Promise<WarmSourceResult>`; ordinary await-and-discard usage remains valid.
 - **Tooling: `aigency.json` declares the install, gate and format commands the aigency toolbelt runs.**
 - **Security: dev-tree advisories fixed** (lockfile only, `npm audit fix`): `vitest` / `@vitest/*` 4.1.11 → 4.1.12 (moderate: `@vitest/mocker`), `vite` 8.3.1 → 8.3.5 (high), `source-map-js` 1.2.1 → 1.2.2 (high), plus their transitive bumps (`rolldown`, `postcss`, `nanoid`, `chai`). All of these fail the CI `npm audit --audit-level=moderate` step on unmodified main; none ships in the published package.
 

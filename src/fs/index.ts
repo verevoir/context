@@ -23,6 +23,7 @@ import {
   type GrepHit,
   type GrepOptions,
   type WarmSourceOptions,
+  type WarmSourceResult,
 } from '../index.js';
 
 export const fs = wrapWithCache(rawFs);
@@ -44,7 +45,7 @@ export function warmSource(
   env: SourceEnv,
   sourceUrl: string,
   options: WarmSourceOptions = {}
-): Promise<void> {
+): Promise<WarmSourceResult> {
   return warmSourceGeneric(rawFs, env, sourceUrl, options);
 }
 
