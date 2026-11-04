@@ -8,6 +8,13 @@
       "timeoutMs": 600000
     },
     {
+      "name": "audit",
+      "kind": "gate",
+      "command": ["npm", "audit", "--audit-level=moderate"],
+      "description": "npm audit at moderate or above, as the ci job runs it; a newly published advisory can turn this red with no code change.",
+      "blocking": true
+    },
+    {
       "name": "typecheck",
       "kind": "gate",
       "command": ["npm", "run", "typecheck"],
