@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Tooling: `aigency.json` declares the install, gate and format commands the aigency toolbelt runs.**
+- **Security: dev-tree advisories fixed** (lockfile only, `npm audit fix`): `vitest` / `@vitest/*` 4.1.11 → 4.1.12 (moderate: `@vitest/mocker`), `vite` 8.3.1 → 8.3.5 (high), `source-map-js` 1.2.1 → 1.2.2 (high), plus their transitive bumps (`rolldown`, `postcss`, `nanoid`, `chai`). All of these fail the CI `npm audit --audit-level=moderate` step on unmodified main; none ships in the published package.
 
 ## 0.15.0 — 2026-09-25
 
