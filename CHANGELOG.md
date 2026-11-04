@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Tooling: `aigency.json` declares the install, gate and format commands the aigency toolbelt runs.**
+
 ## 0.15.0 — 2026-09-25
 
 - **New: `@verevoir/context/gitlab`** — cached GitLab source, the drop-in for `@verevoir/sources/gitlab` (new in sources 0.9.0) exactly as `/github` is for `@verevoir/sources/github`: `wrapWithCache(gitlab)` plus the destructured contract functions (`commitFiles` included), and gitlab bindings of `warmSource` / `grepSource` — lazy, early-terminating, prefix-scopable, and concurrency-bounded, which matters more here than on GitHub because gitlab.com rate-limits anonymous API reads tightly. `isGitlabUrl` / `parseGitlabProjectUrl` are re-exported so a router can route and read through one import. The cache adds nothing to the security surface: the adapter's host allowlist (gitlab.com + `GITLAB_HOSTS`, HTTPS only), origin pinning and Bearer-token handling sit behind every cache miss, and a test drives the facade at an unlisted host to prove it is refused with no request made.

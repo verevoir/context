@@ -11,7 +11,7 @@
       "name": "typecheck",
       "kind": "gate",
       "command": ["npm", "run", "typecheck"],
-      "description": "tsc --noEmit across src and tests.",
+      "description": "tsc --noEmit over src only; tsconfig.json excludes tests/, so the tests are not typechecked.",
       "blocking": true
     },
     {
@@ -33,7 +33,7 @@
       "name": "build",
       "kind": "gate",
       "command": ["npm", "run", "build"],
-      "description": "Compile the published entry points with tsconfig.build.json, so a change that typechecks but does not build is caught before publish.",
+      "description": "Compile src (test files excluded) to dist with tsconfig.build.json, so a change that typechecks but does not build is caught before publish.",
       "blocking": true
     },
     {
