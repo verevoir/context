@@ -1,0 +1,54 @@
+{
+  "commands": [
+    {
+      "name": "install",
+      "kind": "bootstrap",
+      "command": ["npm", "ci"],
+      "description": "Install dependencies exactly as the lockfile pins them.",
+      "timeoutMs": 600000
+    },
+    {
+      "name": "audit",
+      "kind": "gate",
+      "command": ["npm", "audit", "--audit-level=moderate"],
+      "description": "npm audit at moderate or above, as the ci job runs it; a newly published advisory can turn this red with no code change.",
+      "blocking": true,
+      "timeoutMs": 120000
+    },
+    {
+      "name": "typecheck",
+      "kind": "gate",
+      "command": ["npm", "run", "typecheck"],
+      "description": "tsc --noEmit over src only; tsconfig.json excludes tests/, so the tests are not typechecked.",
+      "blocking": true
+    },
+    {
+      "name": "test",
+      "kind": "gate",
+      "command": ["npm", "test"],
+      "description": "The suite (vitest run).",
+      "blocking": true,
+      "timeoutMs": 900000
+    },
+    {
+      "name": "lint",
+      "kind": "gate",
+      "command": ["npm", "run", "lint"],
+      "description": "Prettier check. Blocking because a worker can fix it by running the prettier format command.",
+      "blocking": true
+    },
+    {
+      "name": "build",
+      "kind": "gate",
+      "command": ["npm", "run", "build"],
+      "description": "Compile src (test files excluded) to dist with tsconfig.build.json, so a change that typechecks but does not build is caught before publish.",
+      "blocking": true
+    },
+    {
+      "name": "prettier",
+      "kind": "format",
+      "command": ["npm", "run", "format"],
+      "description": "prettier --write over the same files the lint gate checks. Call it before commit_files."
+    }
+  ]
+}
