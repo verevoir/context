@@ -417,6 +417,69 @@ describe('wrapWithCache — pass-throughs', () => {
   });
 });
 
+/** `@verevoir/sources` >= 0.11's real `ReadFileResult` shape —
+ * `{kind:'found', content, sha}` or `{kind:'binary', mediaType, size,
+ * bytes}`. This package's devDependency pins an older sources release
+ * whose bundled `.d.ts` predates `kind` (see src/index.ts's own
+ * local-cast comment for why), so this fixture's `>= 0.11` members
+ * are typed locally rather than imported, and cast through `unknown`
+ * when handed to a mock typed against the older `ReadFileResult`. */
+type FoundResultV11 = { kind: 'found'; content: string; sha: string };
+type BinaryResultV11 = { kind: 'binary'; mediaType: string; size: number; bytes: Uint8Array };
+
+describe('wrapWithCache — binary passthrough (sources >= 0.11)', () => {
+  it('passes a binary result straight through and never caches it', async () => {
+    const { adapter, methods } = makeStub();
+    const binary: BinaryResultV11 = {
+      kind: 'binary',
+      mediaType: 'image/png',
+      size: 1234,
+      bytes: new Uint8Array([1, 2, 3]),
+    };
+    methods.readFile.mockResolvedValue(binary as unknown as ReadFileResult);
+    const store = createContextStore();
+    const cached = wrapWithCache(adapter, { store });
+
+    const result = await cached.readFile(ENV, URL, 'logo.png');
+
+    expect(result).toEqual(binary);
+    expect(store.getContent({ sourceId: URL, version: '', itemId: 'logo.png' })).toBeUndefined();
+    expect(store.getCached({ sourceId: URL, version: '', itemId: 'logo.png' })).toBeUndefined();
+  });
+
+  it('re-fetches a binary file on every call, since nothing was cached', async () => {
+    const { adapter, methods } = makeStub();
+    const binary: BinaryResultV11 = {
+      kind: 'binary',
+      mediaType: 'image/png',
+      size: 10,
+      bytes: new Uint8Array(),
+    };
+    methods.readFile.mockResolvedValue(binary as unknown as ReadFileResult);
+    const cached = wrapWithCache(adapter, { store: createContextStore() });
+
+    await cached.readFile(ENV, URL, 'logo.png');
+    await cached.readFile(ENV, URL, 'logo.png');
+
+    expect(methods.readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('a cache hit on a text file carries kind: "found", matching a live fetch', async () => {
+    const { adapter, methods } = makeStub();
+    const found: FoundResultV11 = { kind: 'found', content: 'hello', sha: 'sha-1' };
+    methods.readFile.mockResolvedValue(found as unknown as ReadFileResult);
+    const cached = wrapWithCache(adapter, { store: createContextStore() });
+
+    const miss = await cached.readFile(ENV, URL, 'a.md');
+    const hit = await cached.readFile(ENV, URL, 'a.md');
+
+    expect((miss as unknown as FoundResultV11).kind).toBe('found');
+    expect((hit as unknown as FoundResultV11).kind).toBe('found');
+    expect(hit.content).toBe('hello');
+    expect(methods.readFile).toHaveBeenCalledTimes(1); // the hit never re-fetched
+  });
+});
+
 describe('wrapWithCache — isolated stores', () => {
   it('honours the `store` option for tenant / per-test isolation', async () => {
     const { adapter, methods } = makeStub();

@@ -387,6 +387,33 @@ import type {
   RepoTree,
 } from '@verevoir/sources';
 
+/** `@verevoir/sources` >= 0.11 widened `ReadFileResult` to a
+ * discriminated union — `{kind:'found', content, sha}` or
+ * `{kind:'binary', mediaType, size, bytes}` — instead of always
+ * `{content, sha}` (see that package's CHANGELOG). This package's own
+ * devDependency pins an older sources release whose bundled `.d.ts`
+ * predates `kind`, so the imported `ReadFileResult` type above still
+ * types as the pre-0.11 shape here, even though any real adapter at
+ * runtime (peerDependency `*` on `@verevoir/sources`) may return
+ * either. These two helpers read and attach `kind` through a narrow
+ * local cast rather than widening the type import or bumping the
+ * devDependency (out of scope for this fix). A result with no `kind`
+ * at all (an adapter on sources < 0.11, which never returns binary)
+ * is treated as `'found'`, matching that version's only behaviour. */
+function isNonFoundReadResult(result: ReadFileResult): boolean {
+  const kind = (result as { kind?: unknown }).kind;
+  return kind !== undefined && kind !== 'found';
+}
+
+/** Build a cache-hit `ReadFileResult` carrying the same `kind:
+ * 'found'` tag a live fetch would. Only ever called from a path that
+ * is about to serve cached content, which `readFile` below only ever
+ * populates with the `'found'` variant — so a hit and a miss have
+ * the identical shape. */
+function foundReadResult(content: string, sha: string): ReadFileResult {
+  return { kind: 'found', content, sha } as unknown as ReadFileResult;
+}
+
 /** Default ms-window during which the wrapper serves cache without
  * asking the source whether the held version is still current.
  * 10s is the starting position — long enough to cover a tool-loop's
@@ -457,18 +484,25 @@ export function wrapWithCache(
         const age = now() - cached.cachedAt;
         if (age < ttl) {
           // Inside the grace window — serve cache without asking.
-          return { content: cached.content, sha: cached.version };
+          return foundReadResult(cached.content, cached.version);
         }
         // Past the grace window — validate before serving.
         const fresh = await source.isFresh(env, sourceUrl, path, cached.version, ref);
         if (fresh) {
           // Refresh cachedAt so we don't recheck on the next read.
           store.touch(key, now);
-          return { content: cached.content, sha: cached.version };
+          return foundReadResult(cached.content, cached.version);
         }
         // Stale — fall through to fetch.
       }
       const result = await source.readFile(env, sourceUrl, path, ref);
+      if (isNonFoundReadResult(result)) {
+        // 'binary' (or any future non-text kind) -- never decoded to a
+        // string, so there is no `content` to cache. Pass the result
+        // straight through; the caller sees the real discriminant
+        // instead of a cache entry built from `undefined`.
+        return result;
+      }
       store.setContent(key, result.content, result.sha, now);
       return result;
     },
@@ -751,9 +785,11 @@ export async function warmSource(
       const key = { sourceId: sourceUrl, version, itemId: path };
       if (store.getContent(key) !== undefined) continue;
       try {
-        const { content, sha } = await adapter.readFile(env, sourceUrl, path, ref);
-        if (looksBinary(content)) continue;
-        store.setContent(key, content, sha);
+        const result = await adapter.readFile(env, sourceUrl, path, ref);
+        // 'binary' (sources >= 0.11): never decoded, so never warmed.
+        if (isNonFoundReadResult(result)) continue;
+        if (looksBinary(result.content)) continue;
+        store.setContent(key, result.content, result.sha);
       } catch {
         // Raced (file changed/removed since enumeration) or unreadable.
       }
@@ -826,7 +862,9 @@ export async function grepSource(
     if (content === undefined && readable.has(itemId)) {
       try {
         const r = await adapter.readFile(env, sourceUrl, itemId, options.ref);
-        if (!looksBinary(r.content)) {
+        // 'binary' (sources >= 0.11): never decoded, so never warmed or
+        // matched against — same as the unreadable case below.
+        if (!isNonFoundReadResult(r) && !looksBinary(r.content)) {
           store.setContent(key, r.content, r.sha);
           content = r.content;
         }
