@@ -43,3 +43,22 @@ describe('@verevoir/context/github grepSource (wiring)', () => {
     );
   });
 });
+
+describe('@verevoir/context/github warmSource (wiring)', () => {
+  it('returns the adapter tree truncation flag', async () => {
+    const { github } = await import('@verevoir/sources/github');
+    const { warmSource } = await import('../../src/github/index.js');
+    const { createContextStore } = await import('../../src/index.js');
+    const tree = vi.spyOn(github, 'getRepoTree').mockResolvedValueOnce({
+      entries: [],
+      truncated: true,
+    });
+    try {
+      expect(
+        await warmSource({ token: 'x', forkOrg: '' }, REPO, { store: createContextStore() })
+      ).toEqual({ truncated: true });
+    } finally {
+      tree.mockRestore();
+    }
+  });
+});

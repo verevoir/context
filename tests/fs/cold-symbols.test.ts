@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { fs as rawFs } from '@verevoir/sources/fs';
 import { promises as fsPromises } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -36,6 +37,20 @@ async function write(rel: string, content: string): Promise<void> {
 
 const scope = () => ({ sources: [{ sourceId: root, version: '' }] });
 
+describe('@verevoir/context/fs warmSource (wiring)', () => {
+  it('returns the adapter tree truncation flag', async () => {
+    const tree = vi.spyOn(rawFs, 'getRepoTree').mockResolvedValueOnce({
+      entries: [],
+      truncated: true,
+    });
+    try {
+      expect(await warmSource(ENV, root, { store })).toEqual({ truncated: true });
+    } finally {
+      tree.mockRestore();
+    }
+  });
+});
+
 describe('cold find_symbol — warmSource + findSymbols', () => {
   beforeEach(async () => {
     await write('src/widget.ts', 'export class Widget {\n  render() {}\n}\n');
@@ -46,7 +61,7 @@ describe('cold find_symbol — warmSource + findSymbols', () => {
     // Cold: nothing parsed/warmed yet.
     expect(findSymbols('Widget', scope(), { store, match: 'exact' })).toEqual([]);
 
-    await warmSource(ENV, root, { store });
+    expect(await warmSource(ENV, root, { store })).toEqual({ truncated: false });
 
     const hits = findSymbols('Widget', scope(), { store, match: 'exact' });
     expect(hits).toHaveLength(1);

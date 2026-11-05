@@ -20,6 +20,7 @@ import {
   type GrepHit,
   type GrepOptions,
   type WarmSourceOptions,
+  type WarmSourceResult,
 } from '../index.js';
 
 // URL helpers pass straight through, so a router can route and read
@@ -52,7 +53,7 @@ export function warmSource(
   env: SourceEnv,
   sourceUrl: string,
   options: WarmSourceOptions = {}
-): Promise<void> {
+): Promise<WarmSourceResult> {
   return warmSourceGeneric(rawGitlab, env, sourceUrl, options);
 }
 

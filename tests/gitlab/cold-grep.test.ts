@@ -72,4 +72,21 @@ describe('@verevoir/context/gitlab warmSource (wiring)', () => {
     );
     expect(store.getContent({ sourceId: REPO, version: '', itemId: 'README.md' })).toBeUndefined();
   });
+
+  it('returns the adapter tree truncation flag', async () => {
+    const { gitlab } = await import('@verevoir/sources/gitlab');
+    const { warmSource } = await import('../../src/gitlab/index.js');
+    const { createContextStore } = await import('../../src/index.js');
+    const tree = vi.spyOn(gitlab, 'getRepoTree').mockResolvedValueOnce({
+      entries: [],
+      truncated: true,
+    });
+    try {
+      expect(
+        await warmSource({ token: 'x', forkOrg: '' }, REPO, { store: createContextStore() })
+      ).toEqual({ truncated: true });
+    } finally {
+      tree.mockRestore();
+    }
+  });
 });

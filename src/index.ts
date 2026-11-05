@@ -650,6 +650,13 @@ function matchesAnyGlob(path: string, globs: readonly string[]): boolean {
   return globs.some((g) => globToRegExp(g).test(path));
 }
 
+/** Metadata from the source tree used by a completed warm pass. */
+export interface WarmSourceResult {
+  /** True when the source adapter returned an incomplete tree. This
+   * describes enumeration, not files skipped by filters or read errors. */
+  truncated: boolean;
+}
+
 export interface WarmSourceOptions {
   /** Store to warm. Defaults to the module's singleton. */
   store?: ContextStore;
@@ -729,13 +736,24 @@ function eligibleBlobs(tree: RepoTree, options: WarmSourceOptions): string[] {
  * pair — a long-session consumer warms up front (whole tree or a
  * chosen prefix) and every later op is a pure cache hit. One-shot
  * cold ops (`grepSource`) are lazy instead: they read only as much of
- * the tree as the result needs. */
+ * the tree as the result needs.
+ *
+ * **Return value.** Resolves to a {@link WarmSourceResult}.
+ * `truncated` is `true` exactly when the adapter's `getRepoTree`
+ * reported an incomplete tree (e.g. the host capped the listing), and
+ * `false` otherwise — including when the tree is empty or no file is
+ * eligible. When it is `true`, files beyond the cap were never
+ * enumerated, so the store is only partially warmed and `grep` /
+ * `findSymbols` results may be missing matches: surface this to the
+ * user, or narrow the scope (e.g. a `prefix`) and warm again. The flag
+ * describes enumeration only; files skipped by `include` / `exclude`,
+ * binary or oversized files, and read failures do not set it. */
 export async function warmSource(
   adapter: SourceAdapter,
   env: SourceEnv,
   sourceUrl: string,
   options: WarmSourceOptions = {}
-): Promise<void> {
+): Promise<WarmSourceResult> {
   const store = options.store ?? contextStore;
   const ref = options.ref;
   const version = ref ?? '';
@@ -761,6 +779,7 @@ export async function warmSource(
   }
   const workers = Math.max(1, Math.min(concurrency, blobs.length || 1));
   await Promise.all(Array.from({ length: workers }, () => worker()));
+  return { truncated: tree.truncated };
 }
 
 /** Cold grep over any file source — *lazily*. Files are processed in
