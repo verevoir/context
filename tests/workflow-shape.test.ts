@@ -108,4 +108,83 @@ describe('antagonistic-review.yml — the guardrails corpus checkout', () => {
     // Otherwise a rename that stops the parse matching leaves this passing vacuously.
     expect(checked).toContain('review');
   });
+
+  it("states the review job's step-timeout budget as a sum that is right", () => {
+    // The comment above the review job's envelope is the itemised budget the
+    // envelope is checked against by eye. It drifted once already: a step was
+    // added without its minutes. Pin that its terms add up to its stated total,
+    // that the total is the real sum of the job's step timeouts, and that the
+    // envelope sits above it.
+    const job = /^ {2}review:$/m.exec(yml);
+    expect(job).not.toBeNull();
+    const rest = yml.slice(job!.index + 1);
+    const next = /^ {2}[a-z][\w-]*:$/m.exec(rest);
+    const body = rest.slice(0, next?.index ?? rest.length);
+
+    const comment = [...body.matchAll(/^ {4}# {3}(.*)$/gm)].map((m) => m[1]).join(' ');
+    const stated = /= (\d+)m/.exec(comment);
+    expect(stated, 'the budget comment names its total').not.toBeNull();
+    const terms = [...comment.slice(0, stated!.index).matchAll(/ (\d+)(?= \+| $)/g)].map((m) =>
+      Number(m[1])
+    );
+    expect(terms.length).toBeGreaterThan(0);
+    const termSum = terms.reduce((total, n) => total + n, 0);
+    expect(termSum, 'the comment terms add up to its total').toBe(Number(stated![1]));
+
+    const steps = [...body.matchAll(/^ {8}timeout-minutes: (\d+)/gm)].map((m) => Number(m[1]));
+    expect(steps.length).toBe(terms.length);
+    const stepSum = steps.reduce((total, n) => total + n, 0);
+    expect(stepSum, "the stated total is the real sum of the job's step timeouts").toBe(termSum);
+
+    const envelope = /^ {4}timeout-minutes: (\d+)/m.exec(body);
+    expect(envelope).not.toBeNull();
+    expect(Number(envelope![1])).toBeGreaterThan(stepSum);
+  });
+});
+
+describe('antagonistic-review.yml — the reviewer pin-lag warning', () => {
+  // Advisory only. It must stay cheap (one bounded git request, no REST calls
+  // against the App installation's shared 5000/hr budget, STDIO-663) and must
+  // never fail the review it runs inside.
+  const start = yml.indexOf('- name: Warn when the reviewer pin lags a capabilities release');
+  const end = start === -1 ? -1 : yml.indexOf('\n      - name:', start + 1);
+  const step = start === -1 ? '' : yml.slice(start, end === -1 ? yml.length : end);
+  const run = step.slice(step.indexOf('run: |') + 'run: |'.length);
+
+  it('exists, so the assertions below are not vacuous', () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(step.indexOf('run: |')).toBeGreaterThan(-1);
+    expect(run.trim().length).toBeGreaterThan(0);
+  });
+
+  it('makes no REST calls', () => {
+    expect(step).not.toMatch(/\bgh api\b/);
+    expect(step).not.toMatch(/\bcurl\b/);
+    expect(step).not.toMatch(/GH_TOKEN/);
+  });
+
+  it('makes one ls-remote, bounded by timeout 30', () => {
+    const calls = [...run.matchAll(/\bls-remote\b/g)];
+    expect(calls).toHaveLength(1);
+    expect(run).toMatch(/timeout 30 git -C "\$D" ls-remote --tags origin/);
+  });
+
+  it('does not pass --refs, which would hide the peeled commit of an annotated tag', () => {
+    expect(run).not.toMatch(/--refs/);
+  });
+
+  it('is fail-soft: continue-on-error, a 1-minute timeout, set +e', () => {
+    expect(step).toMatch(/^ {8}continue-on-error: true$/m);
+    expect(step).toMatch(/^ {8}timeout-minutes: 1$/m);
+    expect(run.trimStart().startsWith('set +e')).toBe(true);
+  });
+
+  it('exits 0 on every path', () => {
+    // A bare `exit` (no code) is captured as undefined and fails: it would
+    // return the last command's status, which under `set +e` can be non-zero.
+    const exits = [...run.matchAll(/\bexit\b(?:[ \t]+([^\s;]+))?/g)].map((m) => m[1]);
+    expect(exits.length).toBeGreaterThan(0);
+    expect(exits.every((code) => code === '0')).toBe(true);
+    expect(run.trimEnd().endsWith('exit 0')).toBe(true);
+  });
 });
