@@ -85,8 +85,8 @@ jobs:
     # an invariant; the list below is complete and adds up.
     #
     #   mint 2 + preflight 2 + checkout 5 + empty-diff 1 + head-fetch 3 +
-    #   resolve-merge-base 2 + url-rewrite 1 + MCP pre-build 10 + corpus 3 +
-    #   model 12 + publish 5 = 46m
+    #   resolve-merge-base 2 + url-rewrite 1 + MCP pre-build 10 + pin-lag check 1 +
+    #   corpus 3 + model 12 + publish 5 = 47m, inside the 55m envelope below.
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -233,8 +233,11 @@ jobs:
           # back `6dec33f` ("retry the corpus read on a transient blip — stop
           # spurious 'rubric unavailable'"), and the fleet spent half an hour
           # failing every lens closed against a defect that was already fixed.
-          # See STDIO-661.
-          CAPS_SHA="5e22ef67ef60ed8d84d27d3f18356d26971e29cb" # capabilities @ 2026-08-05, hosts scripts/checkout-corpus.sh
+          # See STDIO-661. On 2026-11-04 it sat at a pre-0.5.0 commit whose provision
+          # outgrew the CLI's MCP output cap (BL-417). The "Warn when the reviewer pin
+          # lags a capabilities release" step below now flags this on every review.
+          CAPS_SHA="741c6e1c5450b668acd697e96cd68901d2de2c2c" # capabilities v0.5.1 (2026-08-27; pinned 2026-11-04), hosts scripts/checkout-corpus.sh
+          echo "CAPS_SHA=$CAPS_SHA" >> "$GITHUB_ENV" # read by the pin-currency check below
           rm -rf "$D"
           # Auth as a repo-local http.extraheader (see the file header for why) — written
           # via a redirect so the token stays out of argv, and masked in logs.
@@ -256,6 +259,38 @@ jobs:
             exit 1
           fi
           test -f "$D/dist/bin.js" && echo "reviewer MCP built at $D/dist/bin.js"
+
+      - name: Warn when the reviewer pin lags a capabilities release
+        # Advisory, once per review (one lens leg), and NEVER fails the review.
+        # ONE bounded git request, zero REST calls: the answer is the same for every PR,
+        # and the App installation's 5000/hr REST budget is shared fleet-wide and has
+        # been exhausted before (STDIO-663, see the corpus step). It reuses the
+        # reviewer-MCP clone's repo-local http.extraheader, so no token is in a URL or
+        # in argv. No --refs: capabilities tags are annotated, so the commit is the
+        # peeled ^{} line, and that is what CAPS_SHA names.
+        if: matrix.lens == 'correctness'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          set +e
+          D="/home/runner/.antagonistic-review-mcp" # the reviewer-MCP clone from the pre-build step
+          refs=$(timeout 30 git -C "$D" ls-remote --tags origin 'v*' 2>/dev/null)
+          # "<tag> <commit>", annotated tags resolved to their peeled commit, in semver order.
+          tags=$(printf '%s\n' "$refs" | awk 'NF==2{n=$2; sub("^refs/tags/","",n); p=sub(/\^\{\}$/,"",n); if (p || !(n in c)) c[n]=$1} END{for (n in c) print n" "c[n]}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+ ' | sort -V)
+          latest=${tags##*$'\n'}; lt=${latest%% *}; ls=${latest##* }
+          if [ -z "$lt" ] || [ -z "$CAPS_SHA" ]; then
+            echo "::warning title=Reviewer pin::couldn't check pin currency"; echo "reviewer capabilities: couldn't check pin currency" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          if [ "$ls" = "$CAPS_SHA" ]; then echo "reviewer capabilities pinned at $lt (${CAPS_SHA:0:7}), the latest release." >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          pt=$(printf '%s\n' "$tags" | awk -v s="$CAPS_SHA" '$2==s{print $1}' | tail -1)
+          if [ -n "$pt" ]; then
+            n=$(printf '%s\n' "$tags" | awk -v p="$pt" 'f{c++} $1==p{f=1} END{print c+0}')
+            msg="reviewer capabilities pinned at $pt (${CAPS_SHA:0:7}); latest is $lt, $n releases behind. Bump CAPS_SHA."
+          else
+            msg="reviewer capabilities pinned at an untagged commit (${CAPS_SHA:0:7}); latest is $lt. Pin a release tag's commit."
+          fi
+          echo "::warning title=Reviewer pin lags a release::$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
       - name: Check out the guardrails corpus (read it from disk, not the REST API)
         # WHY A CLONE. Each lens reads ~15 practice bodies. Through the contents API
@@ -316,6 +351,10 @@ jobs:
           # to DERIVE the rubric from the canonical corpus. If mcp.json is absent the
           # action errors and the gate fails closed — the correct outcome.
           mcp_config: .github/antagonistic-review/mcp.json
+          # provision's floor alone is ~63.5k chars (~20.5k tokens) and growing; the
+          # CLI's default MCP output cap is 25000 tokens (BL-417).
+          claude_env: |
+            MAX_MCP_OUTPUT_TOKENS: 60000
           prompt: |
             You are ONE panelist on an ADVERSARIAL review panel standing as a blocking gate on
             this pull request. Your job is to find reasons to REJECT this change, not to confirm
