@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **CI: the v3 antagonistic review is retired; PRs are reviewed by `@verevoir/review`.** The seeded `antagonistic-review.yml` gate, its scripts (`.github/antagonistic-review/`) and the tests that pinned them are removed. `ci.yml` gains a `review` job that calls governance's reusable review workflow, pinned by sha, with lenses derived from the aigency-guardrails corpus. Nothing ships in the published package; older entries describing the gate stay as history.
 - **Tooling: `aigency.json` declares the install, gate and format commands the aigency toolbelt runs.**
 - **Security: dev-tree advisories fixed** (lockfile only, `npm audit fix`): `vitest` / `@vitest/*` 4.1.11 → 4.1.12 (moderate: `@vitest/mocker`), `vite` 8.3.1 → 8.3.5 (high), `source-map-js` 1.2.1 → 1.2.2 (high), plus their transitive bumps (`rolldown`, `postcss`, `nanoid`, `chai`). All of these fail the CI `npm audit --audit-level=moderate` step on unmodified main; none ships in the published package.
 
