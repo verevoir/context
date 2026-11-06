@@ -23,17 +23,22 @@
 // Peer deps on `tree-sitter` and the `tree-sitter-*` grammars are
 // optional in the package manifest — consumers who don't import this
 // subpath don't need to install them.
+//
+// Grammars are loaded lazily, on first use of their language, through
+// `createRequire(import.meta.url)` and cached per language. A static ESM
+// `import` of a grammar made every consumer pay for all ten at import
+// time, and tree-sitter-c-sharp 0.23.5 ("type": "module" with an
+// extensionless "main") made Node's ESM resolver emit DEP0151. A grammar
+// that is not installed or fails to load is reported as a named outcome
+// (`GrammarLoadResult` from `loadGrammar`, `ParseCodeResult` from
+// `tryParseCode`) rather than an import-time crash. `parseCode` /
+// `parseSymbols` keep their sync signatures and throw a
+// `GrammarNotInstalledError` for that case — the same "throws, caller
+// degrades" contract `findSymbols` / `edgesForItem` already apply to
+// per-file parse failures.
 
+import { createRequire } from 'node:module';
 import Parser from 'tree-sitter';
-import TreeSitterTypeScript from 'tree-sitter-typescript';
-import TreeSitterJavaScript from 'tree-sitter-javascript';
-import TreeSitterPython from 'tree-sitter-python';
-import TreeSitterJava from 'tree-sitter-java';
-import TreeSitterCSharp from 'tree-sitter-c-sharp';
-import TreeSitterGo from 'tree-sitter-go';
-import TreeSitterScala from 'tree-sitter-scala';
-import TreeSitterC from 'tree-sitter-c';
-import TreeSitterCpp from 'tree-sitter-cpp';
 import {
   contextStore as defaultContextStore,
   type ContextStore,
@@ -87,8 +92,6 @@ interface WalkCtx {
 type KindResolver = (node: TSNode, ctx: WalkCtx) => SymbolKind | null;
 
 interface LanguageConfig {
-  /** Grammar object passed to `parser.setLanguage`. */
-  grammar: unknown;
   /** Node type → symbol kind (static) or a resolver (dynamic). */
   symbolKinds: Readonly<Record<string, SymbolKind | KindResolver>>;
   /** Extract a declaration's name. */
@@ -263,9 +266,8 @@ const JS_SCOPE_NODES = new Set([
   'arrow_function',
 ]);
 
-function jsConfig(grammar: unknown): LanguageConfig {
+function jsConfig(): LanguageConfig {
   return {
-    grammar,
     symbolKinds: JS_KINDS,
     nameOf: jsNameOf,
     scopeNodeTypes: JS_SCOPE_NODES,
@@ -315,7 +317,6 @@ function pythonImports(node: TSNode): ImportEdge[] {
 }
 
 const PYTHON_CONFIG: LanguageConfig = {
-  grammar: TreeSitterPython,
   symbolKinds: {
     function_definition: (_node, ctx) => (ctx.insideType ? 'method' : 'function'),
     class_definition: 'class',
@@ -342,7 +343,6 @@ function javaImports(node: TSNode): ImportEdge[] {
 }
 
 const JAVA_CONFIG: LanguageConfig = {
-  grammar: TreeSitterJava,
   symbolKinds: {
     class_declaration: 'class',
     interface_declaration: 'interface',
@@ -378,7 +378,6 @@ function csharpImports(node: TSNode): ImportEdge[] {
 }
 
 const CSHARP_CONFIG: LanguageConfig = {
-  grammar: TreeSitterCSharp,
   symbolKinds: {
     class_declaration: 'class',
     interface_declaration: 'interface',
@@ -417,7 +416,6 @@ function goImports(node: TSNode): ImportEdge[] {
 }
 
 const GO_CONFIG: LanguageConfig = {
-  grammar: TreeSitterGo,
   symbolKinds: {
     function_declaration: 'function',
     method_declaration: 'method',
@@ -450,7 +448,6 @@ function scalaImports(node: TSNode): ImportEdge[] {
 }
 
 const SCALA_CONFIG: LanguageConfig = {
-  grammar: TreeSitterScala,
   symbolKinds: {
     class_definition: 'class',
     object_definition: 'class',
@@ -532,7 +529,6 @@ function includeImports(node: TSNode): ImportEdge[] {
 }
 
 const C_CONFIG: LanguageConfig = {
-  grammar: TreeSitterC,
   symbolKinds: {
     function_definition: 'function',
     struct_specifier: 'class',
@@ -549,7 +545,6 @@ const C_CONFIG: LanguageConfig = {
 };
 
 const CPP_CONFIG: LanguageConfig = {
-  grammar: TreeSitterCpp,
   symbolKinds: {
     function_definition: (_node, ctx) => (ctx.insideType ? 'method' : 'function'),
     class_specifier: 'class',
@@ -571,9 +566,9 @@ const CPP_CONFIG: LanguageConfig = {
 // ============================================================
 
 const LANG_CONFIGS: Readonly<Record<SupportedLanguage, LanguageConfig>> = {
-  typescript: jsConfig(TreeSitterTypeScript.typescript),
-  tsx: jsConfig(TreeSitterTypeScript.tsx),
-  javascript: jsConfig(TreeSitterJavaScript),
+  typescript: jsConfig(),
+  tsx: jsConfig(),
+  javascript: jsConfig(),
   python: PYTHON_CONFIG,
   java: JAVA_CONFIG,
   csharp: CSHARP_CONFIG,
@@ -581,6 +576,90 @@ const LANG_CONFIGS: Readonly<Record<SupportedLanguage, LanguageConfig>> = {
   scala: SCALA_CONFIG,
   c: C_CONFIG,
   cpp: CPP_CONFIG,
+};
+
+// ============================================================
+// Lazy grammar loading
+// ============================================================
+
+/** Package + export selector for each language's grammar. */
+const GRAMMAR_SOURCES: Readonly<
+  Record<SupportedLanguage, { pkg: string; pick?: (mod: any) => unknown }>
+> = {
+  typescript: { pkg: 'tree-sitter-typescript', pick: (m) => m.typescript },
+  tsx: { pkg: 'tree-sitter-typescript', pick: (m) => m.tsx },
+  javascript: { pkg: 'tree-sitter-javascript' },
+  python: { pkg: 'tree-sitter-python' },
+  java: { pkg: 'tree-sitter-java' },
+  csharp: { pkg: 'tree-sitter-c-sharp' },
+  go: { pkg: 'tree-sitter-go' },
+  scala: { pkg: 'tree-sitter-scala' },
+  c: { pkg: 'tree-sitter-c' },
+  cpp: { pkg: 'tree-sitter-cpp' },
+};
+
+/** Outcome of loading a language's grammar. `grammar-not-installed`
+ * covers both a missing package and one that throws while loading;
+ * `reason` carries the underlying message. */
+export type GrammarLoadResult =
+  | { kind: 'loaded'; language: SupportedLanguage; grammar: unknown }
+  | { kind: 'grammar-not-installed'; language: SupportedLanguage; reason: string };
+
+/** Outcome of `tryParseCode`. */
+export type ParseCodeResult =
+  | { kind: 'parsed'; symbols: SymbolEntry[]; edges: CodeEdges }
+  | Extract<GrammarLoadResult, { kind: 'grammar-not-installed' }>;
+
+/** Thrown by the sync `parseCode` / `parseSymbols` when the grammar for
+ * the requested language is not installed or fails to load. */
+export class GrammarNotInstalledError extends Error {
+  readonly kind = 'grammar-not-installed' as const;
+  constructor(
+    readonly language: SupportedLanguage,
+    readonly reason: string
+  ) {
+    super(`tree-sitter grammar for ${language} is not installed or failed to load: ${reason}`);
+    this.name = 'GrammarNotInstalledError';
+  }
+}
+
+type RequireFn = (id: string) => unknown;
+
+const defaultRequire: RequireFn = createRequire(import.meta.url);
+let requireFn: RequireFn = defaultRequire;
+const grammarCache = new Map<SupportedLanguage, unknown>();
+
+/** Load (first use) and cache the grammar for a language. Never throws. */
+export function loadGrammar(language: SupportedLanguage): GrammarLoadResult {
+  if (grammarCache.has(language)) {
+    return { kind: 'loaded', language, grammar: grammarCache.get(language) };
+  }
+  const source = GRAMMAR_SOURCES[language];
+  try {
+    const mod = requireFn(source.pkg);
+    const grammar = source.pick ? source.pick(mod) : mod;
+    if (!grammar) throw new Error(`${source.pkg} did not export a ${language} grammar`);
+    grammarCache.set(language, grammar);
+    return { kind: 'loaded', language, grammar };
+  } catch (err) {
+    return {
+      kind: 'grammar-not-installed',
+      language,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/** Test seam: swap the `require` used to load grammars (null restores
+ * the real one) and clear the per-language cache. */
+export const grammarLoaderForTests = {
+  setRequire(fn: RequireFn | null): void {
+    requireFn = fn ?? defaultRequire;
+    grammarCache.clear();
+  },
+  loadedLanguages(): SupportedLanguage[] {
+    return [...grammarCache.keys()];
+  },
 };
 
 let cachedParser: Parser | null = null;
@@ -639,9 +718,21 @@ export function parseCode(
   language: SupportedLanguage,
   source: string
 ): { symbols: SymbolEntry[]; edges: CodeEdges } {
+  const result = tryParseCode(language, source);
+  if (result.kind === 'grammar-not-installed') {
+    throw new GrammarNotInstalledError(result.language, result.reason);
+  }
+  return { symbols: result.symbols, edges: result.edges };
+}
+
+/** Like `parseCode`, but a missing / unloadable grammar is returned as
+ * `{ kind: 'grammar-not-installed', language, reason }` instead of thrown. */
+export function tryParseCode(language: SupportedLanguage, source: string): ParseCodeResult {
   const cfg = LANG_CONFIGS[language];
+  const loaded = loadGrammar(language);
+  if (loaded.kind === 'grammar-not-installed') return loaded;
   const parser = getParser();
-  parser.setLanguage(cfg.grammar as Parameters<Parser['setLanguage']>[0]);
+  parser.setLanguage(loaded.grammar as Parameters<Parser['setLanguage']>[0]);
   // node-tree-sitter reads the source through a chunk callback bounded by
   // `bufferSize` (default ~32KB). Its string path returns the whole
   // remainder in one chunk, so any source over the default throws
@@ -658,7 +749,7 @@ export function parseCode(
   const calls: CodeEdges['calls'] = [];
   walkEdges(tree.rootNode as unknown as TSNode, imports, calls, null, cfg);
 
-  return { symbols, edges: { imports, calls } };
+  return { kind: 'parsed', symbols, edges: { imports, calls } };
 }
 
 /** Convenience wrapper — symbols only. */
