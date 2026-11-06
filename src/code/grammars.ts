@@ -17,9 +17,9 @@
 // ES-module grammars need require(esm). Per Node's modules docs
 // (https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require,
 // read by the coordinator via a summarising fetch on 2026-11-06 — a
-// summary, not a raw read): it works without a flag from 20.19.0 / 22.12.0;
-// the default experimental warning stops from 20.19.0 / 22.13.0 (so 22.12.x
-// may warn); top-level await anywhere in the graph throws
+// summary, not a raw read): it works without a flag from 20.19.0 / 22.12.0 /
+// 23.0.0; the default experimental warning stops from 20.19.0 / 22.13.0 /
+// 23.5.0 (so 22.12.x may warn); top-level await anywhere in the graph throws
 // ERR_REQUIRE_ASYNC_MODULE, which lands here as `grammar-load-failed`.
 // Which error older Node throws is not confirmed by that read.
 
@@ -47,7 +47,7 @@ const GRAMMAR_SOURCES: Readonly<
  * hiccup, timeout, interrupt); a failure with one is not cached. EACCES is
  * deliberately NOT here: a permissions problem needs someone to fix it, and
  * retrying would re-run the failing require for every file meanwhile. */
-const TRANSIENT_CODES: ReadonlySet<string> = new Set([
+export const TRANSIENT_CODES: ReadonlySet<string> = new Set([
   'EMFILE',
   'ENFILE',
   'EAGAIN',
@@ -71,7 +71,10 @@ export interface GrammarLoadFailed {
   kind: 'grammar-load-failed';
   language: SupportedLanguage;
   reason: string;
-  /** The original error from `require`, the export pick, or `setLanguage`. */
+  /** The original error from `require`, or from `setLanguage`. When the
+   * package loads but exports no usable grammar nothing was thrown, so it
+   * is the synthetic `Error` we construct ("<pkg> did not export a <language>
+   * grammar"). */
   cause: unknown;
 }
 
@@ -107,7 +110,7 @@ const grammarCache = new Map<SupportedLanguage, unknown>();
 const failureCache = new Map<SupportedLanguage, GrammarFailure>();
 
 /** Never throws: a thrown value can have a throwing getter / toString. */
-function describeError(err: unknown): string {
+export function describeError(err: unknown): string {
   try {
     return err instanceof Error ? String(err.message) : String(err);
   } catch {
@@ -160,7 +163,9 @@ function unwrapDefault(mod: unknown): unknown {
 
 /** Record (and cache) that a language's grammar loaded but cannot be
  * used — e.g. `parser.setLanguage` threw on an ABI mismatch. Replaces any
- * cached success for the language. */
+ * cached success for the language. Cached unconditionally, with no
+ * TRANSIENT_CODES check: `setLanguage` does no I/O, so its failure is a
+ * property of the grammar object and would recur identically. */
 export function recordLoadFailure(language: SupportedLanguage, err: unknown): GrammarLoadFailed {
   const failure = failureFor(language, 'grammar-load-failed', err) as GrammarLoadFailed;
   grammarCache.delete(language);

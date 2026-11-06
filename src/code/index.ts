@@ -36,6 +36,7 @@ import Parser from 'tree-sitter';
 import {
   loadGrammar,
   recordLoadFailure,
+  describeError,
   GrammarUnavailableError,
   type GrammarFailure,
   type GrammarLoadResult,
@@ -793,7 +794,7 @@ function attemptParse(language: SupportedLanguage, content: string): ParseAttemp
   } catch (err) {
     return {
       kind: 'parse-failed',
-      reason: err instanceof Error ? err.message : String(err),
+      reason: describeError(err),
       cause: err,
     };
   }

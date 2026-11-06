@@ -13,6 +13,13 @@ import {
 import { grammarLoaderForTests } from '../../src/code/grammars.js';
 import { createContextStore } from '../../src/index.js';
 
+// Why the tests drive grammar loading through `grammarLoaderForTests`: the
+// loader's only external effect is `require`, and the behaviours under test
+// (first use, reuse, failure caching, classification) are exactly what is
+// observable at that boundary. The seam is internal (src/code/grammars.ts,
+// not re-exported) and replacing it would mean installing/removing real
+// packages mid-test.
+
 const realRequire = createRequire(import.meta.url);
 
 /** A require that records every id it is asked for, then loads it for real. */
@@ -97,17 +104,29 @@ describe('code-free paths never call the loader', () => {
 });
 
 describe('grammar-not-installed (package absent)', () => {
-  it('loadGrammar returns the named outcome, with the original error as cause', () => {
-    const err = absent('tree-sitter-c-sharp');
+  const err = absent('tree-sitter-c-sharp');
+  function result() {
     grammarLoaderForTests.setRequire(failingRequire(err).fn);
+    return loadGrammar('csharp');
+  }
 
-    const result = loadGrammar('csharp');
+  it('loadGrammar names the outcome', () => {
+    expect(result().kind).toBe('grammar-not-installed');
+  });
 
-    expect(result.kind).toBe('grammar-not-installed');
-    if (result.kind !== 'grammar-not-installed') return;
-    expect(result.language).toBe('csharp');
-    expect(result.reason).toContain("Cannot find module 'tree-sitter-c-sharp'");
-    expect(result.cause).toBe(err);
+  it('carries the language', () => {
+    const r = result();
+    expect(r.kind !== 'loaded' && r.language).toBe('csharp');
+  });
+
+  it('carries the reason', () => {
+    const r = result();
+    expect(r.kind !== 'loaded' && r.reason).toContain("Cannot find module 'tree-sitter-c-sharp'");
+  });
+
+  it('carries the original error as cause', () => {
+    const r = result();
+    expect(r.kind !== 'loaded' && r.cause).toBe(err);
   });
 
   it('tryParseCode returns the named outcome instead of throwing', () => {
@@ -119,13 +138,12 @@ describe('grammar-not-installed (package absent)', () => {
   });
 
   it('the outcome is frozen', () => {
-    grammarLoaderForTests.setRequire((id) => {
-      throw absent(id);
-    });
+    expect(Object.isFrozen(result())).toBe(true);
+  });
 
-    const failure = loadGrammar('csharp');
+  it('the outcome rejects mutation by a caller', () => {
+    const failure = result();
 
-    expect(Object.isFrozen(failure)).toBe(true);
     expect(() => {
       (failure as { kind: string }).kind = 'loaded';
     }).toThrow(TypeError);
@@ -133,19 +151,27 @@ describe('grammar-not-installed (package absent)', () => {
 });
 
 describe('grammar-load-failed (package present but broken)', () => {
-  it('classifies a native load error as grammar-load-failed, with cause', () => {
-    const err = withCode(
-      'The module was compiled against a different Node.js version',
-      'ERR_DLOPEN_FAILED'
-    );
-    grammarLoaderForTests.setRequire(failingRequire(err).fn);
+  const nativeErr = withCode(
+    'The module was compiled against a different Node.js version',
+    'ERR_DLOPEN_FAILED'
+  );
+  function nativeResult() {
+    grammarLoaderForTests.setRequire(failingRequire(nativeErr).fn);
+    return loadGrammar('java');
+  }
 
-    const result = loadGrammar('java');
+  it('classifies a native load error as grammar-load-failed', () => {
+    expect(nativeResult().kind).toBe('grammar-load-failed');
+  });
 
-    expect(result.kind).toBe('grammar-load-failed');
-    if (result.kind !== 'grammar-load-failed') return;
-    expect(result.cause).toBe(err);
-    expect(result.reason).toContain('compiled against a different Node.js version');
+  it('keeps the native load error as cause', () => {
+    const r = nativeResult();
+    expect(r.kind !== 'loaded' && r.cause).toBe(nativeErr);
+  });
+
+  it('uses the native load error message as the reason', () => {
+    const r = nativeResult();
+    expect(r.kind !== 'loaded' && r.reason).toContain('compiled against a different Node.js');
   });
 
   it('classifies a MODULE_NOT_FOUND for a NESTED dependency as grammar-load-failed', () => {
@@ -160,6 +186,16 @@ describe('grammar-load-failed (package present but broken)', () => {
     grammarLoaderForTests.setRequire(() => ({}));
 
     expect(loadGrammar('typescript').kind).toBe('grammar-load-failed');
+  });
+
+  it('for no usable export, cause is the synthetic Error we construct (nothing was thrown)', () => {
+    grammarLoaderForTests.setRequire(() => ({}));
+
+    const r = loadGrammar('typescript');
+
+    expect(r.kind !== 'loaded' && (r.cause as Error).message).toBe(
+      'tree-sitter-typescript did not export a typescript grammar'
+    );
   });
 
   it('tryParseCode surfaces grammar-load-failed rather than throwing', () => {
@@ -202,82 +238,74 @@ describe('failure caching', () => {
     expect(req.calls).toEqual(['tree-sitter-c-sharp']);
   });
 
-  it('caches per language: one language failing does not stop another loading', () => {
+  function javaFailsPythonLoads() {
     grammarLoaderForTests.setRequire((id) => {
       if (id === 'tree-sitter-java') throw new Error('boom');
       return realRequire(id);
     });
+  }
+
+  it('caches per language: the failing language stays failed', () => {
+    javaFailsPythonLoads();
 
     expect(loadGrammar('java').kind).toBe('grammar-load-failed');
+  });
+
+  it('caches per language: another language still loads', () => {
+    javaFailsPythonLoads();
+    loadGrammar('java');
+
     expect(loadGrammar('python').kind).toBe('loaded');
   });
 
-  it('keeps the failure for the process: a package that appears later is not picked up', () => {
-    let installed = false;
-    const calls: string[] = [];
+  function appearsLater() {
+    const state = { installed: false, calls: [] as string[] };
     grammarLoaderForTests.setRequire((id) => {
-      calls.push(id);
-      if (!installed) throw absent(id);
+      state.calls.push(id);
+      if (!state.installed) throw absent(id);
       return realRequire(id);
     });
+    return state;
+  }
+
+  it('keeps the failure for the process: a package that appears later is not picked up', () => {
+    const state = appearsLater();
+    loadGrammar('python');
+    state.installed = true;
 
     expect(loadGrammar('python').kind).toBe('grammar-not-installed');
-    installed = true;
-    expect(loadGrammar('python').kind).toBe('grammar-not-installed');
-    expect(calls).toEqual(['tree-sitter-python']);
+  });
+
+  it('does not re-run the require for a package that appears later', () => {
+    const state = appearsLater();
+    loadGrammar('python');
+    state.installed = true;
+    loadGrammar('python');
+
+    expect(state.calls).toEqual(['tree-sitter-python']);
   });
 
   it('keeps the failure until the test seam resets it', () => {
-    let installed = false;
-    grammarLoaderForTests.setRequire((id) => {
-      if (!installed) throw absent(id);
-      return realRequire(id);
-    });
-    expect(loadGrammar('python').kind).toBe('grammar-not-installed');
-    installed = true;
+    const state = appearsLater();
+    loadGrammar('python');
+    state.installed = true;
 
     grammarLoaderForTests.reset();
 
     expect(loadGrammar('python').kind).toBe('loaded');
   });
-
-  it('does not cache a transient failure (EMFILE): the next call retries and can succeed', () => {
-    let calls = 0;
-    grammarLoaderForTests.setRequire((id) => {
-      calls += 1;
-      if (calls === 1) throw withCode('EMFILE: too many open files', 'EMFILE');
-      return realRequire(id);
-    });
-
-    const first = loadGrammar('python');
-    const second = loadGrammar('python');
-
-    expect(first.kind).toBe('grammar-load-failed');
-    expect(second.kind).toBe('loaded');
-    expect(calls).toBe(2);
-  });
-
-  it('caches EACCES as permanent (a permissions problem needs a fix and a restart)', () => {
-    const req = failingRequire(withCode('EACCES: permission denied', 'EACCES'));
-    grammarLoaderForTests.setRequire(req.fn);
-
-    loadGrammar('python');
-    loadGrammar('python');
-
-    expect(req.calls).toEqual(['tree-sitter-python']);
-  });
 });
 
 describe('GrammarUnavailableError from the sync parse functions', () => {
   const err = new Error('boom');
-  function thrownBy(): unknown {
+  function thrownBy(): GrammarUnavailableError {
     grammarLoaderForTests.setRequire(failingRequire(err).fn);
     try {
       parseSymbols('java', 'class A {}');
     } catch (e) {
-      return e;
+      return e as GrammarUnavailableError;
     }
-    return undefined;
+    throw new Error('parseSymbols did not throw');
   }
 
   it('is a GrammarUnavailableError', () => {
@@ -285,16 +313,19 @@ describe('GrammarUnavailableError from the sync parse functions', () => {
   });
 
   it('carries the kind', () => {
-    expect((thrownBy() as GrammarUnavailableError).kind).toBe('grammar-load-failed');
+    expect(thrownBy().kind).toBe('grammar-load-failed');
   });
 
-  it('carries the language and reason', () => {
-    const e = thrownBy() as GrammarUnavailableError;
-    expect([e.language, e.reason]).toEqual(['java', 'boom']);
+  it('carries the language', () => {
+    expect(thrownBy().language).toBe('java');
+  });
+
+  it('carries the reason', () => {
+    expect(thrownBy().reason).toBe('boom');
   });
 
   it('carries the original error as cause', () => {
-    expect((thrownBy() as GrammarUnavailableError).cause).toBe(err);
+    expect(thrownBy().cause).toBe(err);
   });
 });
 
@@ -306,15 +337,22 @@ describe('findSymbols / edgesForItem report a skipped file', () => {
     store.setContent(key, 'class Thing { void run() {} }');
     return store;
   }
-
-  it('findSymbols returns no hits and calls onSkip with the reason', () => {
-    const store = storeWithJava();
+  function boomRequire() {
     grammarLoaderForTests.setRequire(failingRequire(new Error('boom')).fn);
+  }
+
+  it('findSymbols returns no hits', () => {
+    boomRequire();
+
+    expect(findSymbols('thing', SCOPE, { store: storeWithJava() })).toEqual([]);
+  });
+
+  it('findSymbols calls onSkip with the file, language, kind and reason', () => {
+    boomRequire();
     const skips: SkippedItem[] = [];
 
-    const hits = findSymbols('thing', SCOPE, { store, onSkip: (s) => skips.push(s) });
+    findSymbols('thing', SCOPE, { store: storeWithJava(), onSkip: (s) => skips.push(s) });
 
-    expect(hits).toEqual([]);
     expect(skips).toEqual([
       {
         sourceId: 's',
@@ -330,7 +368,7 @@ describe('findSymbols / edgesForItem report a skipped file', () => {
 
   it('findSymbols does not cache the empty symbols', () => {
     const store = storeWithJava();
-    grammarLoaderForTests.setRequire(failingRequire(new Error('boom')).fn);
+    boomRequire();
 
     findSymbols('thing', SCOPE, { store });
 
@@ -339,7 +377,7 @@ describe('findSymbols / edgesForItem report a skipped file', () => {
 
   it('findSymbols finds the file once the grammar is available (empty was not cached)', () => {
     const store = storeWithJava();
-    grammarLoaderForTests.setRequire(failingRequire(new Error('boom')).fn);
+    boomRequire();
     findSymbols('thing', SCOPE, { store });
 
     grammarLoaderForTests.setRequire(null);
@@ -348,34 +386,50 @@ describe('findSymbols / edgesForItem report a skipped file', () => {
     expect(hits.map((h) => h.name)).toContain('Thing');
   });
 
-  it('edgesForItem returns an empty graph and calls onSkip', () => {
-    const store = storeWithJava();
+  it('edgesForItem returns an empty graph', () => {
+    grammarLoaderForTests.setRequire((id) => {
+      throw absent(id);
+    });
+
+    expect(edgesForItem(storeWithJava(), 's', 'v', 'Thing.java')).toEqual({
+      imports: [],
+      calls: [],
+    });
+  });
+
+  it('edgesForItem calls onSkip with the kind and language', () => {
     grammarLoaderForTests.setRequire((id) => {
       throw absent(id);
     });
     const skips: SkippedItem[] = [];
 
-    const edges = edgesForItem(store, 's', 'v', 'Thing.java', { onSkip: (s) => skips.push(s) });
+    edgesForItem(storeWithJava(), 's', 'v', 'Thing.java', { onSkip: (s) => skips.push(s) });
 
-    expect(edges).toEqual({ imports: [], calls: [] });
     expect(skips.map((s) => [s.kind, s.language])).toEqual([['grammar-not-installed', 'java']]);
   });
 
   it('edgesForItem does not cache the empty graph', () => {
     const store = storeWithJava();
-    grammarLoaderForTests.setRequire(failingRequire(new Error('boom')).fn);
+    boomRequire();
 
     edgesForItem(store, 's', 'v', 'Thing.java');
 
     expect(store.getEdges(key)).toBeFalsy();
   });
 
-  it('works unchanged without onSkip (additive)', () => {
-    const store = storeWithJava();
-    grammarLoaderForTests.setRequire(failingRequire(new Error('boom')).fn);
+  it('findSymbols works unchanged without onSkip (additive)', () => {
+    boomRequire();
 
-    expect(findSymbols('thing', SCOPE, { store })).toEqual([]);
-    expect(edgesForItem(store, 's', 'v', 'Thing.java')).toEqual({ imports: [], calls: [] });
+    expect(findSymbols('thing', SCOPE, { store: storeWithJava() })).toEqual([]);
+  });
+
+  it('edgesForItem works unchanged without onSkip (additive)', () => {
+    boomRequire();
+
+    expect(edgesForItem(storeWithJava(), 's', 'v', 'Thing.java')).toEqual({
+      imports: [],
+      calls: [],
+    });
   });
 });
 
@@ -389,39 +443,52 @@ describe('a parse that throws (not a grammar problem)', () => {
     store.setContent(key, 42 as unknown as string);
     return store;
   }
-
-  it('findSymbols reports kind parse-failed through onSkip', () => {
-    const store = storeWithBadContent();
+  function skipsFromFind(store = storeWithBadContent()): SkippedItem[] {
     const skips: SkippedItem[] = [];
+    findSymbols('a', SCOPE, { store, onSkip: (s) => skips.push(s) });
+    return skips;
+  }
 
-    const hits = findSymbols('a', SCOPE, { store, onSkip: (s) => skips.push(s) });
+  it('findSymbols returns no hits', () => {
+    expect(findSymbols('a', SCOPE, { store: storeWithBadContent() })).toEqual([]);
+  });
 
-    expect(hits).toEqual([]);
-    expect(skips.map((s) => [s.kind, s.language, s.itemId])).toEqual([
+  it('findSymbols reports kind parse-failed, language and item through onSkip', () => {
+    expect(skipsFromFind().map((s) => [s.kind, s.language, s.itemId])).toEqual([
       ['parse-failed', 'python', 'a.py'],
     ]);
-    expect(skips[0].reason.length).toBeGreaterThan(0);
   });
 
-  it('findSymbols does not cache the empty result, so the next call reports again', () => {
-    const store = storeWithBadContent();
-    const skips: SkippedItem[] = [];
-    const onSkip = (s: SkippedItem) => skips.push(s);
+  it('findSymbols reports a non-empty reason', () => {
+    expect(skipsFromFind()[0].reason.length).toBeGreaterThan(0);
+  });
 
-    findSymbols('a', SCOPE, { store, onSkip });
-    findSymbols('a', SCOPE, { store, onSkip });
+  it('findSymbols does not cache the empty result', () => {
+    const store = storeWithBadContent();
+    skipsFromFind(store);
 
     expect(store.getSymbols(key)).toBeFalsy();
-    expect(skips).toHaveLength(2);
   });
 
-  it('edgesForItem reports kind parse-failed and returns an empty graph', () => {
+  it('findSymbols reports again on the next call', () => {
     const store = storeWithBadContent();
+    skipsFromFind(store);
+
+    expect(skipsFromFind(store)).toHaveLength(1);
+  });
+
+  it('edgesForItem returns an empty graph', () => {
+    expect(edgesForItem(storeWithBadContent(), 's', 'v', 'a.py')).toEqual({
+      imports: [],
+      calls: [],
+    });
+  });
+
+  it('edgesForItem reports kind parse-failed', () => {
     const skips: SkippedItem[] = [];
 
-    const edges = edgesForItem(store, 's', 'v', 'a.py', { onSkip: (s) => skips.push(s) });
+    edgesForItem(storeWithBadContent(), 's', 'v', 'a.py', { onSkip: (s) => skips.push(s) });
 
-    expect(edges).toEqual({ imports: [], calls: [] });
     expect(skips.map((s) => s.kind)).toEqual(['parse-failed']);
   });
 
@@ -431,11 +498,5 @@ describe('a parse that throws (not a grammar problem)', () => {
     edgesForItem(store, 's', 'v', 'a.py');
 
     expect(store.getEdges(key)).toBeFalsy();
-  });
-
-  it('works without onSkip (additive): still empty, no throw', () => {
-    const store = storeWithBadContent();
-
-    expect(findSymbols('a', SCOPE, { store })).toEqual([]);
   });
 });

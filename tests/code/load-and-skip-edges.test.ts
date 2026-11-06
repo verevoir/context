@@ -1,21 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Parser from 'tree-sitter';
 import { createRequire } from 'node:module';
 import { loadGrammar, findSymbols, edgesForItem, type SkippedItem } from '../../src/code/index.js';
-import { grammarLoaderForTests } from '../../src/code/grammars.js';
+import { grammarLoaderForTests, TRANSIENT_CODES } from '../../src/code/grammars.js';
 import { createContextStore } from '../../src/index.js';
 
 const realRequire = createRequire(import.meta.url);
 const SCOPE = { sources: [{ sourceId: 's', version: 'v' }] };
 
 beforeEach(() => grammarLoaderForTests.setRequire(null));
-afterEach(() => grammarLoaderForTests.setRequire(null));
+afterEach(() => {
+  grammarLoaderForTests.setRequire(null);
+  vi.restoreAllMocks();
+});
 
 function withCode(message: string, code: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
-// Must match TRANSIENT_CODES in src/code/grammars.ts.
-const TRANSIENT = ['EMFILE', 'ENFILE', 'EAGAIN', 'EBUSY', 'EIO', 'EINTR', 'ETIMEDOUT'];
+// The real list, not a copy, so the table cannot drift from the code.
+const TRANSIENT = [...TRANSIENT_CODES];
 const PERMANENT = ['EACCES', 'ERR_DLOPEN_FAILED', 'ERR_REQUIRE_ESM', 'ERR_REQUIRE_ASYNC_MODULE'];
 
 describe('transient load failures are not cached', () => {
@@ -106,6 +110,41 @@ describe('loadGrammar does not throw on hostile thrown values', () => {
     });
 
     expect(loadGrammar('go').kind).toBe('grammar-load-failed');
+  });
+});
+
+describe('a parse that throws a hostile value', () => {
+  const key = { sourceId: 's', version: 'v', itemId: 'a.py' };
+  const hostile = {
+    toString: () => {
+      throw new Error('toString threw');
+    },
+  };
+  function skips(): SkippedItem[] {
+    const store = createContextStore();
+    store.setContent(key, 'def a():\n    pass\n');
+    vi.spyOn(Parser.prototype, 'parse').mockImplementation(() => {
+      throw hostile;
+    });
+    const out: SkippedItem[] = [];
+    findSymbols('a', SCOPE, { store, onSkip: (s) => out.push(s) });
+    return out;
+  }
+
+  it('does not throw out of findSymbols', () => {
+    expect(() => skips()).not.toThrow();
+  });
+
+  it('is reported as parse-failed', () => {
+    expect(skips()[0].kind).toBe('parse-failed');
+  });
+
+  it('has a printable reason', () => {
+    expect(skips()[0].reason).toBe('[unprintable error]');
+  });
+
+  it('keeps the thrown value as cause', () => {
+    expect(skips()[0].cause).toBe(hostile);
   });
 });
 

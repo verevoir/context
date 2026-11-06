@@ -15,7 +15,7 @@ import { grammarLoaderForTests } from '../../src/code/grammars.js';
 // node_modules with the 0.23.5 shape.
 //
 // Which outcome the loader must give for the stub depends on the Node
-// running the tests (require(esm) is unflagged from 20.19.0 / 22.12.0),
+// running the tests (require(esm) is unflagged from 20.19.0 / 22.12.0 / 23.0.0),
 // so the branch is chosen BY NODE VERSION and logged, and exactly one of
 // the two loader tests runs. The loaded branch also pins that Node marks
 // the require(esm) namespace `__esModule` (what unwrapDefault relies on);
@@ -28,8 +28,9 @@ import { grammarLoaderForTests } from '../../src/code/grammars.js';
 // the clean-stderr assertion is relaxed, see noDefaultWarning().
 //
 // Which branch runs where (do not read this as coverage we lack): the
-// LOADED test runs on Node >= 20.19 / 22.12 (CI uses Node 20, which resolves
-// to >= 20.19); the LOAD-FAILED test runs only on older Node and has not
+// LOADED test runs on Node >= 20.19 / 22.12 (.github/workflows/ci.yml:19
+// pins `node-version: 20`, a floating major; I have not observed which 20.x
+// it resolves to); the LOAD-FAILED test runs only on older Node and has not
 // been run by anyone on this work. Observed so far: Node v26.5.1, LOADED.
 // Which error older Node throws is unconfirmed, so that branch asserts the
 // kind and logs the code rather than pinning one.
@@ -44,8 +45,8 @@ function nodeHasRequireEsm(): boolean {
   return false;
 }
 
-/** Per the Node docs summary (see grammars.ts), require(esm) stops warning
- * by default from 20.19.0 / 22.13.0 / 23.5.0. */
+/** Per the Node docs cited in grammars.ts, require(esm) stops warning by
+ * default from 20.19.0 / 22.13.0 / 23.5.0. */
 function noDefaultWarning(): boolean {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major > 23) return true;
