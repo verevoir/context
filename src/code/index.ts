@@ -24,21 +24,29 @@
 // optional in the package manifest — consumers who don't import this
 // subpath don't need to install them.
 //
-// Grammars are loaded lazily, on first use of their language, through
-// `createRequire(import.meta.url)` and cached per language. A static ESM
-// `import` of a grammar made every consumer pay for all ten at import
-// time, and tree-sitter-c-sharp 0.23.5 ("type": "module" with an
-// extensionless "main") made Node's ESM resolver emit DEP0151. A grammar
-// that is not installed or fails to load is reported as a named outcome
+// Grammars (nine packages for ten languages) are loaded lazily, on first
+// use of their language, and cached per language — see ./grammars.ts.
+// A grammar that is not installed (`grammar-not-installed`) or fails to
+// load (`grammar-load-failed`) is reported as a named outcome
 // (`GrammarLoadResult` from `loadGrammar`, `ParseCodeResult` from
-// `tryParseCode`) rather than an import-time crash. `parseCode` /
-// `parseSymbols` keep their sync signatures and throw a
-// `GrammarNotInstalledError` for that case — the same "throws, caller
-// degrades" contract `findSymbols` / `edgesForItem` already apply to
-// per-file parse failures.
+// `tryParseCode`), never as an import-time crash. The failure is cached
+// for the life of the process, so a package installed or fixed later
+// needs a process restart. `parseCode` / `parseSymbols` keep their sync
+// signatures and throw a `GrammarUnavailableError` (original error on
+// `cause`). `findSymbols` / `edgesForItem` still degrade to empty for
+// such a file, but now REPORT it through an optional `onSkip` callback
+// (and do not cache the empty result) so a missing grammar is not
+// mistaken for a file with no symbols.
 
-import { createRequire } from 'node:module';
 import Parser from 'tree-sitter';
+import {
+  loadGrammar,
+  GrammarUnavailableError,
+  type GrammarFailure,
+  type GrammarLoadResult,
+  type GrammarNotInstalled,
+  type GrammarLoadFailed,
+} from './grammars.js';
 import {
   contextStore as defaultContextStore,
   type ContextStore,
@@ -49,6 +57,8 @@ import {
 } from '../index.js';
 
 export type { CodeEdges, ImportEdge, CallEdge } from '../index.js';
+export { loadGrammar, GrammarUnavailableError };
+export type { GrammarFailure, GrammarLoadResult, GrammarNotInstalled, GrammarLoadFailed };
 
 export type SupportedLanguage =
   | 'typescript'
@@ -266,18 +276,17 @@ const JS_SCOPE_NODES = new Set([
   'arrow_function',
 ]);
 
-function jsConfig(): LanguageConfig {
-  return {
-    symbolKinds: JS_KINDS,
-    nameOf: jsNameOf,
-    scopeNodeTypes: JS_SCOPE_NODES,
-    scopeName: jsScopeName,
-    callNodeTypes: new Set(['call_expression']),
-    calleeOf: functionFieldCallee('member_expression', 'property'),
-    importNodeTypes: new Set(['import_statement']),
-    importsOf: jsImports,
-  };
-}
+/** Shared by typescript, tsx and javascript — only the grammar differs. */
+const JS_CONFIG: LanguageConfig = {
+  symbolKinds: JS_KINDS,
+  nameOf: jsNameOf,
+  scopeNodeTypes: JS_SCOPE_NODES,
+  scopeName: jsScopeName,
+  callNodeTypes: new Set(['call_expression']),
+  calleeOf: functionFieldCallee('member_expression', 'property'),
+  importNodeTypes: new Set(['import_statement']),
+  importsOf: jsImports,
+};
 
 // ── Python ──────────────────────────────────────────────────
 
@@ -566,9 +575,9 @@ const CPP_CONFIG: LanguageConfig = {
 // ============================================================
 
 const LANG_CONFIGS: Readonly<Record<SupportedLanguage, LanguageConfig>> = {
-  typescript: jsConfig(),
-  tsx: jsConfig(),
-  javascript: jsConfig(),
+  typescript: JS_CONFIG,
+  tsx: JS_CONFIG,
+  javascript: JS_CONFIG,
   python: PYTHON_CONFIG,
   java: JAVA_CONFIG,
   csharp: CSHARP_CONFIG,
@@ -578,89 +587,10 @@ const LANG_CONFIGS: Readonly<Record<SupportedLanguage, LanguageConfig>> = {
   cpp: CPP_CONFIG,
 };
 
-// ============================================================
-// Lazy grammar loading
-// ============================================================
-
-/** Package + export selector for each language's grammar. */
-const GRAMMAR_SOURCES: Readonly<
-  Record<SupportedLanguage, { pkg: string; pick?: (mod: any) => unknown }>
-> = {
-  typescript: { pkg: 'tree-sitter-typescript', pick: (m) => m.typescript },
-  tsx: { pkg: 'tree-sitter-typescript', pick: (m) => m.tsx },
-  javascript: { pkg: 'tree-sitter-javascript' },
-  python: { pkg: 'tree-sitter-python' },
-  java: { pkg: 'tree-sitter-java' },
-  csharp: { pkg: 'tree-sitter-c-sharp' },
-  go: { pkg: 'tree-sitter-go' },
-  scala: { pkg: 'tree-sitter-scala' },
-  c: { pkg: 'tree-sitter-c' },
-  cpp: { pkg: 'tree-sitter-cpp' },
-};
-
-/** Outcome of loading a language's grammar. `grammar-not-installed`
- * covers both a missing package and one that throws while loading;
- * `reason` carries the underlying message. */
-export type GrammarLoadResult =
-  | { kind: 'loaded'; language: SupportedLanguage; grammar: unknown }
-  | { kind: 'grammar-not-installed'; language: SupportedLanguage; reason: string };
-
 /** Outcome of `tryParseCode`. */
 export type ParseCodeResult =
   | { kind: 'parsed'; symbols: SymbolEntry[]; edges: CodeEdges }
-  | Extract<GrammarLoadResult, { kind: 'grammar-not-installed' }>;
-
-/** Thrown by the sync `parseCode` / `parseSymbols` when the grammar for
- * the requested language is not installed or fails to load. */
-export class GrammarNotInstalledError extends Error {
-  readonly kind = 'grammar-not-installed' as const;
-  constructor(
-    readonly language: SupportedLanguage,
-    readonly reason: string
-  ) {
-    super(`tree-sitter grammar for ${language} is not installed or failed to load: ${reason}`);
-    this.name = 'GrammarNotInstalledError';
-  }
-}
-
-type RequireFn = (id: string) => unknown;
-
-const defaultRequire: RequireFn = createRequire(import.meta.url);
-let requireFn: RequireFn = defaultRequire;
-const grammarCache = new Map<SupportedLanguage, unknown>();
-
-/** Load (first use) and cache the grammar for a language. Never throws. */
-export function loadGrammar(language: SupportedLanguage): GrammarLoadResult {
-  if (grammarCache.has(language)) {
-    return { kind: 'loaded', language, grammar: grammarCache.get(language) };
-  }
-  const source = GRAMMAR_SOURCES[language];
-  try {
-    const mod = requireFn(source.pkg);
-    const grammar = source.pick ? source.pick(mod) : mod;
-    if (!grammar) throw new Error(`${source.pkg} did not export a ${language} grammar`);
-    grammarCache.set(language, grammar);
-    return { kind: 'loaded', language, grammar };
-  } catch (err) {
-    return {
-      kind: 'grammar-not-installed',
-      language,
-      reason: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-/** Test seam: swap the `require` used to load grammars (null restores
- * the real one) and clear the per-language cache. */
-export const grammarLoaderForTests = {
-  setRequire(fn: RequireFn | null): void {
-    requireFn = fn ?? defaultRequire;
-    grammarCache.clear();
-  },
-  loadedLanguages(): SupportedLanguage[] {
-    return [...grammarCache.keys()];
-  },
-};
+  | GrammarFailure;
 
 let cachedParser: Parser | null = null;
 function getParser(): Parser {
@@ -719,18 +649,17 @@ export function parseCode(
   source: string
 ): { symbols: SymbolEntry[]; edges: CodeEdges } {
   const result = tryParseCode(language, source);
-  if (result.kind === 'grammar-not-installed') {
-    throw new GrammarNotInstalledError(result.language, result.reason);
-  }
+  if (result.kind !== 'parsed') throw new GrammarUnavailableError(result);
   return { symbols: result.symbols, edges: result.edges };
 }
 
 /** Like `parseCode`, but a missing / unloadable grammar is returned as
- * `{ kind: 'grammar-not-installed', language, reason }` instead of thrown. */
+ * `{ kind: 'grammar-not-installed' | 'grammar-load-failed', language,
+ * reason, cause }` instead of thrown. */
 export function tryParseCode(language: SupportedLanguage, source: string): ParseCodeResult {
   const cfg = LANG_CONFIGS[language];
   const loaded = loadGrammar(language);
-  if (loaded.kind === 'grammar-not-installed') return loaded;
+  if (loaded.kind !== 'loaded') return loaded;
   const parser = getParser();
   parser.setLanguage(loaded.grammar as Parameters<Parser['setLanguage']>[0]);
   // node-tree-sitter reads the source through a chunk callback bounded by
@@ -832,10 +761,29 @@ export interface SymbolHit {
   endLine: number;
 }
 
+/** A file that could not be parsed because its language's grammar is
+ * unavailable. Its symbols / edges are returned empty (and not cached)
+ * rather than thrown — this reports why. */
+export interface SkippedItem {
+  sourceId: string;
+  version: string;
+  itemId: string;
+  language: SupportedLanguage;
+  kind: GrammarFailure['kind'];
+  reason: string;
+}
+
 export interface FindSymbolOptions {
   maxResults?: number;
   match?: 'substring' | 'exact';
   store?: ContextStore;
+  /** Called once per file skipped because its grammar is unavailable. */
+  onSkip?: (skip: SkippedItem) => void;
+}
+
+export interface EdgesForItemOptions {
+  /** Called when the file is skipped because its grammar is unavailable. */
+  onSkip?: (skip: SkippedItem) => void;
 }
 
 const DEFAULT_FIND_MAX = 50;
@@ -855,7 +803,7 @@ export function findSymbols(
     const items = store.listIndexedItems(sourceId, version);
     for (const itemId of items) {
       if (hits.length >= max) return hits;
-      const symbols = symbolsForItem(store, sourceId, version, itemId);
+      const symbols = symbolsForItem(store, sourceId, version, itemId, options.onSkip);
       if (!symbols) continue;
       for (const sym of symbols) {
         if (hits.length >= max) return hits;
@@ -883,7 +831,8 @@ function symbolsForItem(
   store: ContextStore,
   sourceId: string,
   version: string,
-  itemId: string
+  itemId: string,
+  onSkip?: (skip: SkippedItem) => void
 ): SymbolEntry[] | null {
   const key = { sourceId, version, itemId };
   const cached = store.getSymbols(key);
@@ -897,9 +846,17 @@ function symbolsForItem(
   }
   // A single unparseable file must never crash a whole-source symbol
   // search — degrade to "no symbols" and cache that so we don't retry.
+  // A missing / unloadable grammar is different: report it and return
+  // empty WITHOUT caching, so it isn't indistinguishable from a file
+  // that simply has no symbols.
   let symbols: SymbolEntry[];
   try {
-    symbols = parseSymbols(language, content);
+    const result = tryParseCode(language, content);
+    if (result.kind !== 'parsed') {
+      onSkip?.({ sourceId, version, itemId, language, kind: result.kind, reason: result.reason });
+      return [];
+    }
+    symbols = result.symbols;
   } catch {
     symbols = [];
   }
@@ -914,7 +871,8 @@ export function edgesForItem(
   store: ContextStore,
   sourceId: string,
   version: string,
-  itemId: string
+  itemId: string,
+  options: EdgesForItemOptions = {}
 ): CodeEdges | null {
   const key = { sourceId, version, itemId };
   const cached = store.getEdges(key);
@@ -929,9 +887,23 @@ export function edgesForItem(
   }
   // As with symbols: one file's parse failure must not crash the
   // whole code-graph build.
+  // A missing / unloadable grammar is reported and not cached (see
+  // symbolsForItem).
   let edges: CodeEdges;
   try {
-    edges = parseCode(language, content).edges;
+    const result = tryParseCode(language, content);
+    if (result.kind !== 'parsed') {
+      options.onSkip?.({
+        sourceId,
+        version,
+        itemId,
+        language,
+        kind: result.kind,
+        reason: result.reason,
+      });
+      return { imports: [], calls: [] };
+    }
+    edges = result.edges;
   } catch {
     edges = { imports: [], calls: [] };
   }
