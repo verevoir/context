@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-11-06
 
 - **Tooling: `aigency.json` declares the install, gate and format commands the aigency toolbelt runs.**
 - **Security: dev-tree advisories fixed** (lockfile only, `npm audit fix`): `vitest` / `@vitest/*` 4.1.11 → 4.1.12 (moderate: `@vitest/mocker`), `vite` 8.3.1 → 8.3.5 (high), `source-map-js` 1.2.1 → 1.2.2 (high), plus their transitive bumps (`rolldown`, `postcss`, `nanoid`, `chai`). All of these fail the CI `npm audit --audit-level=moderate` step on unmodified main; none ships in the published package.
+- **`@verevoir/context/code` loads tree-sitter grammars lazily** via `createRequire`, cached per language, instead of static ESM imports evaluated at import. `tree-sitter-c-sharp` 0.23.5 (`"type": "module"`, extensionless `"main"`) made Node's ESM resolver emit DEP0151, and every consumer paid to load every grammar. Existing function signatures are unchanged and synchronous.
+- **New: named outcomes.** `loadGrammar` / `tryParseCode` return `{ kind: 'grammar-not-installed' | 'grammar-load-failed', language, reason, cause }` instead of throwing; the sync `parseCode` / `parseSymbols` throw `GrammarUnavailableError`. Permanent failures are cached per process (restart to pick up an install); transient ones (EMFILE, ENFILE, EAGAIN, EBUSY, EIO, EINTR, ETIMEDOUT) are not cached.
+- **New: `onSkip` on `findSymbols` / `edgesForItem`.** A file whose grammar is unavailable, or whose parse throws (`kind: 'parse-failed'`), still yields empty but is reported via `onSkip(SkippedItem)` and its empty result is no longer cached. **Behaviour change:** a parse exception used to be cached as "no symbols"; it is now re-attempted on each call. `SkippedItem.cause` carries the original error.
+- **Behaviour change for ES-module grammars.** CommonJS grammars (e.g. the `tree-sitter-c-sharp` 0.23.1 this repo installs) are unaffected. A `"type": "module"` grammar (0.23.5) now loads through `require`, which needs `require(esm)`: Node ≥ 20.19.0 on 20.x, ≥ 22.12.0 on 22.x, and 23.0.0+. The default experimental warning stops from 20.19.0, 22.13.0 and 23.5.0, so 22.12.x may warn on stderr. Older Node, and a grammar with top-level await (`ERR_REQUIRE_ASYNC_MODULE`), report `grammar-load-failed`. Source: Node's [modules docs](https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require). `engines` stays `>=20`.
 
 ## 0.15.0 — 2026-09-25
 

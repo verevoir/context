@@ -74,6 +74,44 @@ const hits = findSymbols('auth', {
 // → [{ name: 'AuthHandler', kind: 'class', ... }, { name: 'authenticate', kind: 'method', ... }]
 ```
 
+### Grammar loading and unavailable grammars
+
+`@verevoir/context/code` loads each tree-sitter grammar lazily, on first use of its language (via `createRequire`), and caches it per language. Importing the subpath loads no grammar. A grammar that cannot be used is reported by name rather than crashing the import:
+
+```ts
+import {
+  loadGrammar,
+  tryParseCode,
+  parseSymbols,
+  findSymbols,
+  GrammarUnavailableError,
+  type GrammarLoadResult,
+  type GrammarFailure,
+  type ParseCodeResult,
+  type SkippedItem,
+} from '@verevoir/context/code';
+
+loadGrammar('csharp'); // GrammarLoadResult: { kind: 'loaded', language, grammar }
+//                        | { kind: 'grammar-not-installed', language, reason, cause }
+//                        | { kind: 'grammar-load-failed', language, reason, cause }
+tryParseCode('csharp', src); // ParseCodeResult: { kind: 'parsed', symbols, edges } | GrammarFailure
+
+try {
+  parseSymbols('csharp', src); // sync, unchanged signature
+} catch (e) {
+  if (e instanceof GrammarUnavailableError) e.kind; // 'grammar-not-installed' | 'grammar-load-failed'; e.cause is the original error
+}
+
+findSymbols('Auth', scope, {
+  onSkip: (s: SkippedItem) => console.warn(s.itemId, s.kind, s.reason),
+});
+```
+
+- `grammar-not-installed`: `require` failed with MODULE_NOT_FOUND or ERR_MODULE_NOT_FOUND naming the grammar package itself. `grammar-load-failed`: any other failure — the package is present but throws while loading, a nested dependency is missing, it has no usable export, it is an ES module on a Node without `require(esm)`, or `parser.setLanguage` rejects it (e.g. ABI mismatch).
+- A permanent failure is cached per language for the life of the process (the failing `require` is not re-run per file); installing or fixing a package needs a process restart. Transient failures (`EMFILE`, `ENFILE`, `EAGAIN`, `EBUSY`, `EIO`, `EINTR`, `ETIMEDOUT`) are not cached; the next call retries. `EACCES` is cached as permanent.
+- `findSymbols` / `edgesForItem` still return empty for a file whose grammar is unavailable or whose parse throws (`kind: 'parse-failed'`), and do not cache that empty result; the optional `onSkip(SkippedItem)` callback (an option on `findSymbols`, and a fifth options argument on `edgesForItem`) reports it. `SkippedItem.cause` carries the original error. A throwing `onSkip` propagates to the caller.
+- A grammar package that is an ES module (`"type": "module"`, e.g. `tree-sitter-c-sharp` 0.23.5) needs `require(esm)`: Node 20.19.0+ on 20.x, 22.12.0+ on 22.x, 23.0.0+; the default experimental warning stops from 20.19.0, 22.13.0 and 23.5.0 (22.12.x may warn). Older Node, and a grammar with top-level await, report `grammar-load-failed`. Source: [Node's modules docs](https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require).
+
 ### Cached source — convenience subpaths
 
 Drop-in replacements for `@verevoir/sources/<kind>` that add read-through caching. Same `SourceAdapter` contract; consumers swap the import path to gain caching, no other code changes.
@@ -199,7 +237,7 @@ interface SymbolEntry {
 }
 ```
 
-`@verevoir/context/code` populates these from tree-sitter parses (TypeScript / TSX / JavaScript today). Consumers can also populate from their own parsers.
+`@verevoir/context/code` populates these from tree-sitter parses (ten languages: TypeScript, TSX, JavaScript, Python, Java, C#, Go, Scala, C, C++). Consumers can also populate from their own parsers.
 
 ## Per-instance + singleton
 

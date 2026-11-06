@@ -23,17 +23,26 @@
 // Peer deps on `tree-sitter` and the `tree-sitter-*` grammars are
 // optional in the package manifest — consumers who don't import this
 // subpath don't need to install them.
+//
+// Grammars are loaded lazily, per language, on first use. How, the named
+// outcomes (`grammar-not-installed` / `grammar-load-failed`) and failure
+// caching are described once, in ./grammars.ts. Here: `tryParseCode`
+// returns those outcomes, `parseCode` / `parseSymbols` throw
+// `GrammarUnavailableError`, and `findSymbols` / `edgesForItem` report a
+// skipped file (unavailable grammar, or a parse that threw) through
+// `onSkip` and do not cache its empty result.
 
 import Parser from 'tree-sitter';
-import TreeSitterTypeScript from 'tree-sitter-typescript';
-import TreeSitterJavaScript from 'tree-sitter-javascript';
-import TreeSitterPython from 'tree-sitter-python';
-import TreeSitterJava from 'tree-sitter-java';
-import TreeSitterCSharp from 'tree-sitter-c-sharp';
-import TreeSitterGo from 'tree-sitter-go';
-import TreeSitterScala from 'tree-sitter-scala';
-import TreeSitterC from 'tree-sitter-c';
-import TreeSitterCpp from 'tree-sitter-cpp';
+import {
+  loadGrammar,
+  recordLoadFailure,
+  describeError,
+  GrammarUnavailableError,
+  type GrammarFailure,
+  type GrammarLoadResult,
+  type GrammarNotInstalled,
+  type GrammarLoadFailed,
+} from './grammars.js';
 import {
   contextStore as defaultContextStore,
   type ContextStore,
@@ -44,6 +53,8 @@ import {
 } from '../index.js';
 
 export type { CodeEdges, ImportEdge, CallEdge } from '../index.js';
+export { loadGrammar, GrammarUnavailableError };
+export type { GrammarFailure, GrammarLoadResult, GrammarNotInstalled, GrammarLoadFailed };
 
 export type SupportedLanguage =
   | 'typescript'
@@ -87,8 +98,6 @@ interface WalkCtx {
 type KindResolver = (node: TSNode, ctx: WalkCtx) => SymbolKind | null;
 
 interface LanguageConfig {
-  /** Grammar object passed to `parser.setLanguage`. */
-  grammar: unknown;
   /** Node type → symbol kind (static) or a resolver (dynamic). */
   symbolKinds: Readonly<Record<string, SymbolKind | KindResolver>>;
   /** Extract a declaration's name. */
@@ -263,19 +272,17 @@ const JS_SCOPE_NODES = new Set([
   'arrow_function',
 ]);
 
-function jsConfig(grammar: unknown): LanguageConfig {
-  return {
-    grammar,
-    symbolKinds: JS_KINDS,
-    nameOf: jsNameOf,
-    scopeNodeTypes: JS_SCOPE_NODES,
-    scopeName: jsScopeName,
-    callNodeTypes: new Set(['call_expression']),
-    calleeOf: functionFieldCallee('member_expression', 'property'),
-    importNodeTypes: new Set(['import_statement']),
-    importsOf: jsImports,
-  };
-}
+/** Shared by typescript, tsx and javascript — only the grammar differs. */
+const JS_CONFIG: LanguageConfig = {
+  symbolKinds: JS_KINDS,
+  nameOf: jsNameOf,
+  scopeNodeTypes: JS_SCOPE_NODES,
+  scopeName: jsScopeName,
+  callNodeTypes: new Set(['call_expression']),
+  calleeOf: functionFieldCallee('member_expression', 'property'),
+  importNodeTypes: new Set(['import_statement']),
+  importsOf: jsImports,
+};
 
 // ── Python ──────────────────────────────────────────────────
 
@@ -315,7 +322,6 @@ function pythonImports(node: TSNode): ImportEdge[] {
 }
 
 const PYTHON_CONFIG: LanguageConfig = {
-  grammar: TreeSitterPython,
   symbolKinds: {
     function_definition: (_node, ctx) => (ctx.insideType ? 'method' : 'function'),
     class_definition: 'class',
@@ -342,7 +348,6 @@ function javaImports(node: TSNode): ImportEdge[] {
 }
 
 const JAVA_CONFIG: LanguageConfig = {
-  grammar: TreeSitterJava,
   symbolKinds: {
     class_declaration: 'class',
     interface_declaration: 'interface',
@@ -378,7 +383,6 @@ function csharpImports(node: TSNode): ImportEdge[] {
 }
 
 const CSHARP_CONFIG: LanguageConfig = {
-  grammar: TreeSitterCSharp,
   symbolKinds: {
     class_declaration: 'class',
     interface_declaration: 'interface',
@@ -417,7 +421,6 @@ function goImports(node: TSNode): ImportEdge[] {
 }
 
 const GO_CONFIG: LanguageConfig = {
-  grammar: TreeSitterGo,
   symbolKinds: {
     function_declaration: 'function',
     method_declaration: 'method',
@@ -450,7 +453,6 @@ function scalaImports(node: TSNode): ImportEdge[] {
 }
 
 const SCALA_CONFIG: LanguageConfig = {
-  grammar: TreeSitterScala,
   symbolKinds: {
     class_definition: 'class',
     object_definition: 'class',
@@ -532,7 +534,6 @@ function includeImports(node: TSNode): ImportEdge[] {
 }
 
 const C_CONFIG: LanguageConfig = {
-  grammar: TreeSitterC,
   symbolKinds: {
     function_definition: 'function',
     struct_specifier: 'class',
@@ -549,7 +550,6 @@ const C_CONFIG: LanguageConfig = {
 };
 
 const CPP_CONFIG: LanguageConfig = {
-  grammar: TreeSitterCpp,
   symbolKinds: {
     function_definition: (_node, ctx) => (ctx.insideType ? 'method' : 'function'),
     class_specifier: 'class',
@@ -571,9 +571,9 @@ const CPP_CONFIG: LanguageConfig = {
 // ============================================================
 
 const LANG_CONFIGS: Readonly<Record<SupportedLanguage, LanguageConfig>> = {
-  typescript: jsConfig(TreeSitterTypeScript.typescript),
-  tsx: jsConfig(TreeSitterTypeScript.tsx),
-  javascript: jsConfig(TreeSitterJavaScript),
+  typescript: JS_CONFIG,
+  tsx: JS_CONFIG,
+  javascript: JS_CONFIG,
   python: PYTHON_CONFIG,
   java: JAVA_CONFIG,
   csharp: CSHARP_CONFIG,
@@ -582,6 +582,11 @@ const LANG_CONFIGS: Readonly<Record<SupportedLanguage, LanguageConfig>> = {
   c: C_CONFIG,
   cpp: CPP_CONFIG,
 };
+
+/** Outcome of `tryParseCode`. */
+export type ParseCodeResult =
+  | { kind: 'parsed'; symbols: SymbolEntry[]; edges: CodeEdges }
+  | GrammarFailure;
 
 let cachedParser: Parser | null = null;
 function getParser(): Parser {
@@ -639,9 +644,26 @@ export function parseCode(
   language: SupportedLanguage,
   source: string
 ): { symbols: SymbolEntry[]; edges: CodeEdges } {
+  const result = tryParseCode(language, source);
+  if (result.kind !== 'parsed') throw new GrammarUnavailableError(result);
+  return { symbols: result.symbols, edges: result.edges };
+}
+
+/** Like `parseCode`, but a missing / unloadable grammar is returned as
+ * `{ kind: 'grammar-not-installed' | 'grammar-load-failed', language,
+ * reason, cause }` instead of thrown. */
+export function tryParseCode(language: SupportedLanguage, source: string): ParseCodeResult {
   const cfg = LANG_CONFIGS[language];
+  const loaded = loadGrammar(language);
+  if (loaded.kind !== 'loaded') return loaded;
   const parser = getParser();
-  parser.setLanguage(cfg.grammar as Parameters<Parser['setLanguage']>[0]);
+  try {
+    parser.setLanguage(loaded.grammar as Parameters<Parser['setLanguage']>[0]);
+  } catch (err) {
+    // e.g. an ABI mismatch: the grammar loaded but cannot be used. Same
+    // named, cached failure path as a load error.
+    return recordLoadFailure(language, err);
+  }
   // node-tree-sitter reads the source through a chunk callback bounded by
   // `bufferSize` (default ~32KB). Its string path returns the whole
   // remainder in one chunk, so any source over the default throws
@@ -658,7 +680,7 @@ export function parseCode(
   const calls: CodeEdges['calls'] = [];
   walkEdges(tree.rootNode as unknown as TSNode, imports, calls, null, cfg);
 
-  return { symbols, edges: { imports, calls } };
+  return { kind: 'parsed', symbols, edges: { imports, calls } };
 }
 
 /** Convenience wrapper — symbols only. */
@@ -741,10 +763,64 @@ export interface SymbolHit {
   endLine: number;
 }
 
+/** A file that could not be parsed: its language's grammar is unavailable
+ * (`grammar-not-installed` / `grammar-load-failed`) or the parse itself
+ * threw (`parse-failed`). Its symbols / edges are returned empty (and not
+ * cached) rather than thrown — this reports why. */
+export interface SkippedItem {
+  sourceId: string;
+  version: string;
+  itemId: string;
+  language: SupportedLanguage;
+  kind: GrammarFailure['kind'] | 'parse-failed';
+  reason: string;
+  /** The original error (for `parse-failed` it may come from the parse or
+   * from our tree walk; its stack tells them apart). */
+  cause: unknown;
+}
+
+type ParseAttempt = ParseCodeResult | { kind: 'parse-failed'; reason: string; cause: unknown };
+
+/** Not bounded on purpose: a permanently unparseable file is re-parsed and
+ * re-reported on every call, because ContextStore has no slot for a failure
+ * marker and changing its shape is out of scope; the caller sees each
+ * `onSkip` and can stop. The try spans the parse AND our tree walk, so a
+ * walker bug reads as `parse-failed` too; `cause` carries the stack.
+ * `tryParseCode`, with a thrown parse error returned as `parse-failed`
+ * instead of propagating. */
+function attemptParse(language: SupportedLanguage, content: string): ParseAttempt {
+  try {
+    return tryParseCode(language, content);
+  } catch (err) {
+    return {
+      kind: 'parse-failed',
+      reason: describeError(err),
+      cause: err,
+    };
+  }
+}
+
+function skippedItem(
+  key: { sourceId: string; version: string; itemId: string },
+  language: SupportedLanguage,
+  attempt: Exclude<ParseAttempt, { kind: 'parsed' }>
+): SkippedItem {
+  return { ...key, language, kind: attempt.kind, reason: attempt.reason, cause: attempt.cause };
+}
+
 export interface FindSymbolOptions {
   maxResults?: number;
   match?: 'substring' | 'exact';
   store?: ContextStore;
+  /** Called once per file skipped (grammar unavailable, or parse threw).
+   * Called outside the parse guard: if it throws, the error reaches the
+   * caller and nothing is cached for that file. */
+  onSkip?: (skip: SkippedItem) => void;
+}
+
+export interface EdgesForItemOptions {
+  /** Called when the file is skipped (grammar unavailable, or parse threw). */
+  onSkip?: (skip: SkippedItem) => void;
 }
 
 const DEFAULT_FIND_MAX = 50;
@@ -764,7 +840,7 @@ export function findSymbols(
     const items = store.listIndexedItems(sourceId, version);
     for (const itemId of items) {
       if (hits.length >= max) return hits;
-      const symbols = symbolsForItem(store, sourceId, version, itemId);
+      const symbols = symbolsForItem(store, sourceId, version, itemId, options.onSkip);
       if (!symbols) continue;
       for (const sym of symbols) {
         if (hits.length >= max) return hits;
@@ -792,7 +868,8 @@ function symbolsForItem(
   store: ContextStore,
   sourceId: string,
   version: string,
-  itemId: string
+  itemId: string,
+  onSkip?: (skip: SkippedItem) => void
 ): SymbolEntry[] | null {
   const key = { sourceId, version, itemId };
   const cached = store.getSymbols(key);
@@ -805,15 +882,16 @@ function symbolsForItem(
     return [];
   }
   // A single unparseable file must never crash a whole-source symbol
-  // search — degrade to "no symbols" and cache that so we don't retry.
-  let symbols: SymbolEntry[];
-  try {
-    symbols = parseSymbols(language, content);
-  } catch {
-    symbols = [];
+  // search: degrade to empty, but report it and do NOT cache the empty
+  // result, so it is not mistaken for a file with no symbols. `onSkip`
+  // runs outside the parse guard, so a throwing callback reaches the caller.
+  const attempt = attemptParse(language, content);
+  if (attempt.kind !== 'parsed') {
+    onSkip?.(skippedItem(key, language, attempt));
+    return [];
   }
-  store.setSymbols(key, symbols);
-  return symbols;
+  store.setSymbols(key, attempt.symbols);
+  return attempt.symbols;
 }
 
 /** Get the code-graph edges for a `(sourceId, version, itemId)`,
@@ -823,7 +901,8 @@ export function edgesForItem(
   store: ContextStore,
   sourceId: string,
   version: string,
-  itemId: string
+  itemId: string,
+  options: EdgesForItemOptions = {}
 ): CodeEdges | null {
   const key = { sourceId, version, itemId };
   const cached = store.getEdges(key);
@@ -836,14 +915,13 @@ export function edgesForItem(
     store.setEdges(key, empty);
     return empty;
   }
-  // As with symbols: one file's parse failure must not crash the
-  // whole code-graph build.
-  let edges: CodeEdges;
-  try {
-    edges = parseCode(language, content).edges;
-  } catch {
-    edges = { imports: [], calls: [] };
+  // As with symbols: a failure degrades to an empty graph, is reported
+  // through `onSkip` (outside the parse guard) and is not cached.
+  const attempt = attemptParse(language, content);
+  if (attempt.kind !== 'parsed') {
+    options.onSkip?.(skippedItem(key, language, attempt));
+    return { imports: [], calls: [] };
   }
-  store.setEdges(key, edges);
-  return edges;
+  store.setEdges(key, attempt.edges);
+  return attempt.edges;
 }
