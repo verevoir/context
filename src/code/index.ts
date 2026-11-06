@@ -24,23 +24,17 @@
 // optional in the package manifest — consumers who don't import this
 // subpath don't need to install them.
 //
-// Grammars (nine packages for ten languages) are loaded lazily, on first
-// use of their language, and cached per language — see ./grammars.ts.
-// A grammar that is not installed (`grammar-not-installed`) or fails to
-// load (`grammar-load-failed`) is reported as a named outcome
-// (`GrammarLoadResult` from `loadGrammar`, `ParseCodeResult` from
-// `tryParseCode`), never as an import-time crash. The failure is cached
-// for the life of the process, so a package installed or fixed later
-// needs a process restart. `parseCode` / `parseSymbols` keep their sync
-// signatures and throw a `GrammarUnavailableError` (original error on
-// `cause`). `findSymbols` / `edgesForItem` still degrade to empty for
-// such a file, but now REPORT it through an optional `onSkip` callback
-// (and do not cache the empty result) so a missing grammar is not
-// mistaken for a file with no symbols.
+// Grammars are loaded lazily, per language, on first use. How, the named
+// outcomes (`grammar-not-installed` / `grammar-load-failed`) and failure
+// caching are described once, in ./grammars.ts. Here: `tryParseCode`
+// returns those outcomes, `parseCode` / `parseSymbols` throw
+// `GrammarUnavailableError`, and `findSymbols` / `edgesForItem` report a
+// skipped file through `onSkip`.
 
 import Parser from 'tree-sitter';
 import {
   loadGrammar,
+  recordLoadFailure,
   GrammarUnavailableError,
   type GrammarFailure,
   type GrammarLoadResult,
@@ -661,7 +655,13 @@ export function tryParseCode(language: SupportedLanguage, source: string): Parse
   const loaded = loadGrammar(language);
   if (loaded.kind !== 'loaded') return loaded;
   const parser = getParser();
-  parser.setLanguage(loaded.grammar as Parameters<Parser['setLanguage']>[0]);
+  try {
+    parser.setLanguage(loaded.grammar as Parameters<Parser['setLanguage']>[0]);
+  } catch (err) {
+    // e.g. an ABI mismatch: the grammar loaded but cannot be used. Same
+    // named, cached failure path as a load error.
+    return recordLoadFailure(language, err);
+  }
   // node-tree-sitter reads the source through a chunk callback bounded by
   // `bufferSize` (default ~32KB). Its string path returns the whole
   // remainder in one chunk, so any source over the default throws
@@ -777,7 +777,9 @@ export interface FindSymbolOptions {
   maxResults?: number;
   match?: 'substring' | 'exact';
   store?: ContextStore;
-  /** Called once per file skipped because its grammar is unavailable. */
+  /** Called once per file skipped because its grammar is unavailable.
+   * Called outside the parse guard: if it throws, the error reaches the
+   * caller and nothing is cached for that file. */
   onSkip?: (skip: SkippedItem) => void;
 }
 
@@ -849,17 +851,19 @@ function symbolsForItem(
   // A missing / unloadable grammar is different: report it and return
   // empty WITHOUT caching, so it isn't indistinguishable from a file
   // that simply has no symbols.
-  let symbols: SymbolEntry[];
+  let result: ParseCodeResult | null;
   try {
-    const result = tryParseCode(language, content);
-    if (result.kind !== 'parsed') {
-      onSkip?.({ sourceId, version, itemId, language, kind: result.kind, reason: result.reason });
-      return [];
-    }
-    symbols = result.symbols;
+    result = tryParseCode(language, content);
   } catch {
-    symbols = [];
+    result = null;
   }
+  // Outside the try: a throwing `onSkip` must reach the caller, not be
+  // swallowed into a cached empty result.
+  if (result !== null && result.kind !== 'parsed') {
+    onSkip?.({ sourceId, version, itemId, language, kind: result.kind, reason: result.reason });
+    return [];
+  }
+  const symbols: SymbolEntry[] = result !== null && result.kind === 'parsed' ? result.symbols : [];
   store.setSymbols(key, symbols);
   return symbols;
 }
@@ -889,24 +893,26 @@ export function edgesForItem(
   // whole code-graph build.
   // A missing / unloadable grammar is reported and not cached (see
   // symbolsForItem).
-  let edges: CodeEdges;
+  let result: ParseCodeResult | null;
   try {
-    const result = tryParseCode(language, content);
-    if (result.kind !== 'parsed') {
-      options.onSkip?.({
-        sourceId,
-        version,
-        itemId,
-        language,
-        kind: result.kind,
-        reason: result.reason,
-      });
-      return { imports: [], calls: [] };
-    }
-    edges = result.edges;
+    result = tryParseCode(language, content);
   } catch {
-    edges = { imports: [], calls: [] };
+    result = null;
   }
+  // Outside the try, as in symbolsForItem.
+  if (result !== null && result.kind !== 'parsed') {
+    options.onSkip?.({
+      sourceId,
+      version,
+      itemId,
+      language,
+      kind: result.kind,
+      reason: result.reason,
+    });
+    return { imports: [], calls: [] };
+  }
+  const edges: CodeEdges =
+    result !== null && result.kind === 'parsed' ? result.edges : { imports: [], calls: [] };
   store.setEdges(key, edges);
   return edges;
 }

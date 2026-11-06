@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
 import {
+  detectLanguage,
   loadGrammar,
   parseSymbols,
   tryParseCode,
@@ -153,19 +154,34 @@ describe('grammar-load-failed (package present but broken)', () => {
 });
 
 describe('failure caching', () => {
+  function javaAbsent() {
+    return failingRequire(withCode("Cannot find module 'tree-sitter-java'", 'MODULE_NOT_FOUND'));
+  }
+
   it('runs the failing require once per language, not once per file', () => {
-    const req = failingRequire(
-      withCode("Cannot find module 'tree-sitter-java'", 'MODULE_NOT_FOUND')
-    );
+    const req = javaAbsent();
     grammarLoaderForTests.setRequire(req.fn);
 
-    const first = loadGrammar('java');
-    const second = loadGrammar('java');
+    loadGrammar('java');
+    loadGrammar('java');
     tryParseCode('java', 'class A {}');
     tryParseCode('java', 'class B {}');
 
     expect(req.calls).toEqual(['tree-sitter-java']);
-    expect(second).toBe(first);
+  });
+
+  it('returns the same cached outcome object on later calls', () => {
+    grammarLoaderForTests.setRequire(javaAbsent().fn);
+
+    const first = loadGrammar('java');
+    expect(loadGrammar('java')).toBe(first);
+  });
+
+  it('records the failed language in the failure cache', () => {
+    grammarLoaderForTests.setRequire(javaAbsent().fn);
+
+    loadGrammar('java');
+
     expect(grammarLoaderForTests.failedLanguages()).toEqual(['java']);
   });
 
@@ -194,7 +210,7 @@ describe('failure caching', () => {
     expect(calls).toEqual(['tree-sitter-python']);
   });
 
-  it('is cleared only by the test seam', () => {
+  it('keeps the failure until the test seam resets it', () => {
     let installed = false;
     grammarLoaderForTests.setRequire((id) => {
       if (!installed) throw withCode(`Cannot find module '${id}'`, 'MODULE_NOT_FOUND');
@@ -210,9 +226,15 @@ describe('failure caching', () => {
 });
 
 describe('sync parseSymbols with an unavailable grammar', () => {
-  it('constructs nothing at set-up: the loader is not called until a parse asks', () => {
+  it('detectLanguage, non-code items and a code-free search never call the loader', () => {
     const req = failingRequire(new Error('boom'));
     grammarLoaderForTests.setRequire(req.fn);
+    const store = createContextStore();
+    store.setContent({ sourceId: 's', version: 'v', itemId: 'notes.txt' }, 'Thing');
+
+    detectLanguage('a/b.ts');
+    findSymbols('thing', { sources: [{ sourceId: 's', version: 'v' }] }, { store });
+    edgesForItem(store, 's', 'v', 'notes.txt');
 
     expect(req.calls).toEqual([]);
     expect(grammarLoaderForTests.failedLanguages()).toEqual([]);

@@ -74,6 +74,44 @@ const hits = findSymbols('auth', {
 // → [{ name: 'AuthHandler', kind: 'class', ... }, { name: 'authenticate', kind: 'method', ... }]
 ```
 
+### Grammar loading and unavailable grammars
+
+`@verevoir/context/code` loads each tree-sitter grammar lazily, on first use of its language (via `createRequire`), and caches it per language. Importing the subpath loads no grammar. A grammar that cannot be used is reported by name rather than crashing the import:
+
+```ts
+import {
+  loadGrammar,
+  tryParseCode,
+  parseSymbols,
+  findSymbols,
+  GrammarUnavailableError,
+  type GrammarLoadResult,
+  type GrammarFailure,
+  type ParseCodeResult,
+  type SkippedItem,
+} from '@verevoir/context/code';
+
+loadGrammar('csharp'); // GrammarLoadResult: { kind: 'loaded', language, grammar }
+//                        | { kind: 'grammar-not-installed', language, reason, cause }
+//                        | { kind: 'grammar-load-failed', language, reason, cause }
+tryParseCode('csharp', src); // ParseCodeResult: { kind: 'parsed', symbols, edges } | GrammarFailure
+
+try {
+  parseSymbols('csharp', src); // sync, unchanged signature
+} catch (e) {
+  if (e instanceof GrammarUnavailableError) e.kind; // 'grammar-not-installed' | 'grammar-load-failed'; e.cause is the original error
+}
+
+findSymbols('Auth', scope, {
+  onSkip: (s: SkippedItem) => console.warn(s.itemId, s.kind, s.reason),
+});
+```
+
+- `grammar-not-installed`: `require` failed with MODULE_NOT_FOUND for the grammar package itself. `grammar-load-failed`: the package is present but throws while loading, has no usable export, or is rejected by `parser.setLanguage` (e.g. ABI mismatch).
+- A failure is cached per language for the life of the process (the failing `require` is not re-run per file); installing or fixing a package needs a process restart.
+- `findSymbols` / `edgesForItem` still return empty for a file whose grammar is unavailable, and do not cache that empty result; the optional `onSkip(SkippedItem)` callback (an option on `findSymbols`, and a fifth options argument on `edgesForItem`) reports it. A throwing `onSkip` propagates to the caller.
+- A grammar package that is an ES module (`"type": "module"`, e.g. `tree-sitter-c-sharp` 0.23.5) needs `require(esm)`: Node 20.19.0+ / 22.12.0+. Older Node reports `grammar-load-failed` (`ERR_REQUIRE_ESM`).
+
 ### Cached source — convenience subpaths
 
 Drop-in replacements for `@verevoir/sources/<kind>` that add read-through caching. Same `SourceAdapter` contract; consumers swap the import path to gain caching, no other code changes.

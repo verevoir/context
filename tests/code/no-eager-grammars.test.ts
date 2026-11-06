@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 // anywhere in the module graph of src/code/index.ts would run its factory
 // at import time and put an entry in `evaluated`; the lazy path goes
 // through `createRequire`, which bypasses the mock registry, so it never
-// does. Re-adding a static grammar import therefore turns the first test red.
+// does. CAVEAT (observed in a mutation run): esbuild elides an UNUSED
+// import, so an unused static grammar import does not run its factory and
+// the first test stays green; a USED one should turn it red (not yet
+// watched). The source scan in the second test catches both (watched red).
 const evaluated = vi.hoisted(() => [] as string[]);
 
 vi.mock('tree-sitter-typescript', () => {

@@ -13,9 +13,37 @@ import { grammarLoaderForTests } from '../../src/code/grammars.js';
 // devDependencies install is 0.23.1 (CommonJS, no "type"), which never
 // emits it — so the tests that matter here use a STUB package in a tmp
 // node_modules with the 0.23.5 shape.
+//
+// Which outcome the loader must give for the stub depends on the Node
+// running the tests (require(esm) is unflagged from 20.19.0 / 22.12.0),
+// so the branch is chosen BY NODE VERSION and logged, and exactly one of
+// the two loader tests runs.
+
+function nodeHasRequireEsm(): boolean {
+  const flag = (process.features as unknown as { require_module?: unknown }).require_module;
+  if (typeof flag === 'boolean') return flag;
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (major > 22) return true;
+  if (major === 22) return minor >= 12;
+  if (major === 20) return minor >= 19;
+  return false;
+}
+
+const hasRequireEsm = nodeHasRequireEsm();
+const NODE = `node ${process.version} (process.features.require_module=${String(
+  (process.features as unknown as { require_module?: unknown }).require_module
+)})`;
+
 let tmp: string;
 
 beforeAll(() => {
+  console.log(
+    `[dep0151] ${NODE}; branch under test: ${
+      hasRequireEsm
+        ? 'require(esm) SUPPORTED -> the stub must LOAD (default export unwrapped)'
+        : 'require(esm) UNSUPPORTED -> the stub must be grammar-load-failed (ERR_REQUIRE_ESM)'
+    }`
+  );
   tmp = mkdtempSync(join(tmpdir(), 'dep0151-'));
   const pkg = join(tmp, 'node_modules', 'tree-sitter-c-sharp');
   mkdirSync(join(pkg, 'bindings', 'node'), { recursive: true });
@@ -47,6 +75,24 @@ beforeAll(() => {
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 afterEach(() => grammarLoaderForTests.setRequire(null));
 
+/** Load the stub through the loader's createRequire path, collecting
+ * every process warning emitted meanwhile. */
+async function loadStubCollectingWarnings() {
+  grammarLoaderForTests.setRequire(createRequire(join(tmp, 'probe.js')));
+  const codes: string[] = [];
+  const onWarning = (w: Error & { code?: string }): void => {
+    codes.push(w.code ?? w.name);
+  };
+  process.on('warning', onWarning);
+  try {
+    const result = loadGrammar('csharp');
+    await new Promise((resolve) => setImmediate(resolve));
+    return { result, codes };
+  } finally {
+    process.off('warning', onWarning);
+  }
+}
+
 describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () => {
   it('control: a native ESM import of the stub DOES emit DEP0151 (proves the stub reproduces it)', (ctx) => {
     const run = spawnSync(process.execPath, [join(tmp, 'probe.mjs')], {
@@ -55,38 +101,41 @@ describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () 
     });
     const seen = JSON.parse(run.stdout.trim().split('\n').pop() ?? '[]') as string[];
     if (!seen.includes('DEP0151')) {
-      ctx.skip(
-        `this Node (${process.version}) did not emit DEP0151 for the stub; saw ${JSON.stringify(seen)}`
-      );
+      const why = `${NODE} did not emit DEP0151 for the stub; saw ${JSON.stringify(seen)}`;
+      console.log(`[dep0151] control SKIPPED: ${why}`);
+      ctx.skip(why);
     }
+    console.log(`[dep0151] control RAN on ${NODE}: native import emitted ${JSON.stringify(seen)}`);
     expect(seen).toContain('DEP0151');
   });
 
-  it('loading the stub through the loader (createRequire) emits no DEP0151', async () => {
-    grammarLoaderForTests.setRequire(createRequire(join(tmp, 'probe.js')));
-    const codes: string[] = [];
-    const onWarning = (w: Error & { code?: string }): void => {
-      codes.push(w.code ?? w.name);
-    };
-    process.on('warning', onWarning);
-    let result;
-    try {
-      result = loadGrammar('csharp');
-      await new Promise((resolve) => setImmediate(resolve));
-    } finally {
-      process.off('warning', onWarning);
-    }
+  it.runIf(hasRequireEsm)(
+    'require(esm) branch: the loader LOADS the stub, unwraps its default and emits no DEP0151',
+    async () => {
+      const { result, codes } = await loadStubCollectingWarnings();
+      console.log(`[dep0151] branch=LOADED on ${NODE}; warnings seen: ${JSON.stringify(codes)}`);
 
-    expect(codes).not.toContain('DEP0151');
-    // Where require(esm) is supported the ES module's default export is
-    // unwrapped; where it is not, the failure is named and carries the cause.
-    if (result.kind === 'loaded') {
-      expect(result.grammar).toEqual({ name: 'stub-csharp' });
-    } else {
-      expect(result.kind).toBe('grammar-load-failed');
-      expect((result.cause as { code?: string }).code).toBe('ERR_REQUIRE_ESM');
+      expect(codes).not.toContain('DEP0151');
+      expect(result.kind).toBe('loaded');
+      if (result.kind === 'loaded') expect(result.grammar).toEqual({ name: 'stub-csharp' });
     }
-  });
+  );
+
+  it.runIf(!hasRequireEsm)(
+    'no-require(esm) branch: the loader reports the stub as grammar-load-failed (ERR_REQUIRE_ESM), no DEP0151',
+    async () => {
+      const { result, codes } = await loadStubCollectingWarnings();
+      console.log(
+        `[dep0151] branch=LOAD-FAILED on ${NODE}; warnings seen: ${JSON.stringify(codes)}`
+      );
+
+      expect(codes).not.toContain('DEP0151');
+      expect(result.kind).toBe('grammar-load-failed');
+      if (result.kind === 'grammar-load-failed') {
+        expect((result.cause as { code?: string }).code).toBe('ERR_REQUIRE_ESM');
+      }
+    }
+  );
 });
 
 describe('installed tree-sitter-c-sharp (0.23.1 here — cannot reproduce DEP0151)', () => {
