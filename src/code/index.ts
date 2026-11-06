@@ -773,17 +773,29 @@ export interface SkippedItem {
   language: SupportedLanguage;
   kind: GrammarFailure['kind'] | 'parse-failed';
   reason: string;
+  /** The original error (for `parse-failed` it may come from the parse or
+   * from our tree walk; its stack tells them apart). */
+  cause: unknown;
 }
 
-type ParseAttempt = ParseCodeResult | { kind: 'parse-failed'; reason: string };
+type ParseAttempt = ParseCodeResult | { kind: 'parse-failed'; reason: string; cause: unknown };
 
-/** `tryParseCode`, with a thrown parse error returned as `parse-failed`
+/** Not bounded on purpose: a permanently unparseable file is re-parsed and
+ * re-reported on every call, because ContextStore has no slot for a failure
+ * marker and changing its shape is out of scope; the caller sees each
+ * `onSkip` and can stop. The try spans the parse AND our tree walk, so a
+ * walker bug reads as `parse-failed` too; `cause` carries the stack.
+ * `tryParseCode`, with a thrown parse error returned as `parse-failed`
  * instead of propagating. */
 function attemptParse(language: SupportedLanguage, content: string): ParseAttempt {
   try {
     return tryParseCode(language, content);
   } catch (err) {
-    return { kind: 'parse-failed', reason: err instanceof Error ? err.message : String(err) };
+    return {
+      kind: 'parse-failed',
+      reason: err instanceof Error ? err.message : String(err),
+      cause: err,
+    };
   }
 }
 
@@ -792,7 +804,7 @@ function skippedItem(
   language: SupportedLanguage,
   attempt: Exclude<ParseAttempt, { kind: 'parsed' }>
 ): SkippedItem {
-  return { ...key, language, kind: attempt.kind, reason: attempt.reason };
+  return { ...key, language, kind: attempt.kind, reason: attempt.reason, cause: attempt.cause };
 }
 
 export interface FindSymbolOptions {

@@ -257,14 +257,14 @@ describe('failure caching', () => {
     expect(calls).toBe(2);
   });
 
-  it('does not cache a transient failure (EACCES) either, and keeps retrying while it persists', () => {
+  it('caches EACCES as permanent (a permissions problem needs a fix and a restart)', () => {
     const req = failingRequire(withCode('EACCES: permission denied', 'EACCES'));
     grammarLoaderForTests.setRequire(req.fn);
 
     loadGrammar('python');
     loadGrammar('python');
 
-    expect(req.calls).toEqual(['tree-sitter-python', 'tree-sitter-python']);
+    expect(req.calls).toEqual(['tree-sitter-python']);
   });
 });
 
@@ -323,6 +323,7 @@ describe('findSymbols / edgesForItem report a skipped file', () => {
         language: 'java',
         kind: 'grammar-load-failed',
         reason: 'boom',
+        cause: expect.objectContaining({ message: 'boom' }),
       },
     ]);
   });

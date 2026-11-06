@@ -11,6 +11,8 @@ function withCode(message: string, code: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+const SCOPE = { sources: [{ sourceId: 's', version: 'v' }] };
+
 describe('isPackageAbsent branches', () => {
   it('ERR_MODULE_NOT_FOUND naming the grammar package is grammar-not-installed', () => {
     grammarLoaderForTests.setRequire(() => {
@@ -41,29 +43,41 @@ describe('isPackageAbsent branches', () => {
 });
 
 describe('export pick', () => {
-  it('typescript and tsx each pick their own export of tree-sitter-typescript', () => {
-    grammarLoaderForTests.setRequire(() => ({ typescript: 'TS-GRAMMAR', tsx: 'TSX-GRAMMAR' }));
+  const both = () => ({ typescript: 'TS-GRAMMAR', tsx: 'TSX-GRAMMAR' });
 
+  it('typescript picks the `typescript` export of tree-sitter-typescript', () => {
+    grammarLoaderForTests.setRequire(both);
     const ts = loadGrammar('typescript');
-    const tsx = loadGrammar('tsx');
-
     expect(ts.kind === 'loaded' && ts.grammar).toBe('TS-GRAMMAR');
+  });
+
+  it('tsx picks the `tsx` export of tree-sitter-typescript', () => {
+    grammarLoaderForTests.setRequire(both);
+    const tsx = loadGrammar('tsx');
     expect(tsx.kind === 'loaded' && tsx.grammar).toBe('TSX-GRAMMAR');
   });
 });
 
 describe('non-Error throws', () => {
-  it('a thrown string becomes the reason and the cause, as grammar-load-failed', () => {
+  function result() {
     grammarLoaderForTests.setRequire(() => {
       throw 'plain string';
     });
+    return loadGrammar('go');
+  }
 
-    const result = loadGrammar('go');
+  it('is grammar-load-failed', () => {
+    expect(result().kind).toBe('grammar-load-failed');
+  });
 
-    expect(result.kind).toBe('grammar-load-failed');
-    if (result.kind === 'loaded') return;
-    expect(result.reason).toBe('plain string');
-    expect(result.cause).toBe('plain string');
+  it('uses the string as the reason', () => {
+    const r = result();
+    expect(r.kind !== 'loaded' && r.reason).toBe('plain string');
+  });
+
+  it('keeps the string as the cause', () => {
+    const r = result();
+    expect(r.kind !== 'loaded' && r.cause).toBe('plain string');
   });
 });
 
@@ -92,20 +106,32 @@ describe('unwrapDefault', () => {
     const r = loadGrammar('go');
     expect(r.kind === 'loaded' && r.grammar).toBe(mod);
   });
+
+  it('leaves a namespace with named exports only (no default, no __esModule) alone', () => {
+    const mod = { named: 1 };
+    grammarLoaderForTests.setRequire(() => mod);
+    const r = loadGrammar('go');
+    expect(r.kind === 'loaded' && r.grammar).toBe(mod);
+  });
 });
 
 describe('cached failures are frozen', () => {
-  it('cannot be mutated by a caller', () => {
+  function failure() {
     grammarLoaderForTests.setRequire(() => {
       throw new Error('boom');
     });
-    const failure = loadGrammar('go');
+    return loadGrammar('go');
+  }
 
-    expect(Object.isFrozen(failure)).toBe(true);
+  it('is frozen', () => {
+    expect(Object.isFrozen(failure())).toBe(true);
+  });
+
+  it('rejects mutation by a caller', () => {
+    const f = failure();
     expect(() => {
-      (failure as { kind: string }).kind = 'loaded';
+      (f as { kind: string }).kind = 'loaded';
     }).toThrow(TypeError);
-    expect(loadGrammar('go').kind).toBe('grammar-load-failed');
   });
 });
 
@@ -128,27 +154,35 @@ describe('a grammar that loads but is rejected by parser.setLanguage', () => {
     tryParseCode('python', 'def b():\n    pass\n');
 
     expect(calls).toBe(1);
+  });
+
+  it('and loadGrammar then reports the language as failed', () => {
+    grammarLoaderForTests.setRequire(() => ({}));
+    tryParseCode('python', 'def a():\n    pass\n');
+
     expect(loadGrammar('python').kind).toBe('grammar-load-failed');
   });
 
-  it('findSymbols reports it through onSkip instead of caching "no symbols"', () => {
+  it('findSymbols reports it through onSkip', () => {
     const key = { sourceId: 's', version: 'v', itemId: 'a.py' };
     const store = createContextStore();
     store.setContent(key, 'def a():\n    pass\n');
     grammarLoaderForTests.setRequire(() => ({}));
     const skips: SkippedItem[] = [];
 
-    findSymbols(
-      'a',
-      { sources: [{ sourceId: 's', version: 'v' }] },
-      {
-        store,
-        onSkip: (s) => skips.push(s),
-      }
-    );
+    findSymbols('a', SCOPE, { store, onSkip: (s) => skips.push(s) });
 
-    expect(skips).toHaveLength(1);
-    expect(skips[0].kind).toBe('grammar-load-failed');
+    expect(skips.map((s) => s.kind)).toEqual(['grammar-load-failed']);
+  });
+
+  it('findSymbols does not cache "no symbols" for it', () => {
+    const key = { sourceId: 's', version: 'v', itemId: 'a.py' };
+    const store = createContextStore();
+    store.setContent(key, 'def a():\n    pass\n');
+    grammarLoaderForTests.setRequire(() => ({}));
+
+    findSymbols('a', SCOPE, { store });
+
     expect(store.getSymbols(key)).toBeFalsy();
   });
 });
@@ -163,33 +197,41 @@ describe('a throwing onSkip', () => {
     });
     return store;
   }
+  const failing = () => {
+    throw new Error('callback failed');
+  };
 
-  it('findSymbols lets the callback error reach the caller and caches nothing', () => {
+  it('findSymbols lets the callback error reach the caller', () => {
     const store = setup();
-    expect(() =>
-      findSymbols(
-        'thing',
-        { sources: [{ sourceId: 's', version: 'v' }] },
-        {
-          store,
-          onSkip: () => {
-            throw new Error('callback failed');
-          },
-        }
-      )
-    ).toThrow('callback failed');
+    expect(() => findSymbols('thing', SCOPE, { store, onSkip: failing })).toThrow(
+      'callback failed'
+    );
+  });
+
+  it('findSymbols caches nothing when the callback throws', () => {
+    const store = setup();
+    try {
+      findSymbols('thing', SCOPE, { store, onSkip: failing });
+    } catch {
+      /* expected */
+    }
     expect(store.getSymbols(key)).toBeFalsy();
   });
 
-  it('edgesForItem lets the callback error reach the caller and caches nothing', () => {
+  it('edgesForItem lets the callback error reach the caller', () => {
     const store = setup();
-    expect(() =>
-      edgesForItem(store, 's', 'v', 'Thing.java', {
-        onSkip: () => {
-          throw new Error('callback failed');
-        },
-      })
-    ).toThrow('callback failed');
+    expect(() => edgesForItem(store, 's', 'v', 'Thing.java', { onSkip: failing })).toThrow(
+      'callback failed'
+    );
+  });
+
+  it('edgesForItem caches nothing when the callback throws', () => {
+    const store = setup();
+    try {
+      edgesForItem(store, 's', 'v', 'Thing.java', { onSkip: failing });
+    } catch {
+      /* expected */
+    }
     expect(store.getEdges(key)).toBeFalsy();
   });
 });

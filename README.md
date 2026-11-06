@@ -108,9 +108,9 @@ findSymbols('Auth', scope, {
 ```
 
 - `grammar-not-installed`: `require` failed with MODULE_NOT_FOUND or ERR_MODULE_NOT_FOUND naming the grammar package itself. `grammar-load-failed`: any other failure — the package is present but throws while loading, a nested dependency is missing, it has no usable export, it is an ES module on a Node without `require(esm)`, or `parser.setLanguage` rejects it (e.g. ABI mismatch).
-- A permanent failure is cached per language for the life of the process (the failing `require` is not re-run per file); installing or fixing a package needs a process restart. Transient failures (`EMFILE`, `ENFILE`, `EAGAIN`, `EBUSY`, `EIO`, `EINTR`, `ETIMEDOUT`, `EACCES`) are not cached; the next call retries.
-- `findSymbols` / `edgesForItem` still return empty for a file whose grammar is unavailable or whose parse throws (`kind: 'parse-failed'`), and do not cache that empty result; the optional `onSkip(SkippedItem)` callback (an option on `findSymbols`, and a fifth options argument on `edgesForItem`) reports it. A throwing `onSkip` propagates to the caller.
-- A grammar package that is an ES module (`"type": "module"`, e.g. `tree-sitter-c-sharp` 0.23.5) needs `require(esm)`: Node 20.19.0+ on 20.x, 22.12.0+ on 22.x (Node docs, "Loading ECMAScript modules using `require()`"). Older Node reports `grammar-load-failed` (`ERR_REQUIRE_ESM`).
+- A permanent failure is cached per language for the life of the process (the failing `require` is not re-run per file); installing or fixing a package needs a process restart. Transient failures (`EMFILE`, `ENFILE`, `EAGAIN`, `EBUSY`, `EIO`, `EINTR`, `ETIMEDOUT`) are not cached; the next call retries. `EACCES` is cached as permanent.
+- `findSymbols` / `edgesForItem` still return empty for a file whose grammar is unavailable or whose parse throws (`kind: 'parse-failed'`), and do not cache that empty result; the optional `onSkip(SkippedItem)` callback (an option on `findSymbols`, and a fifth options argument on `edgesForItem`) reports it. `SkippedItem.cause` carries the original error. A throwing `onSkip` propagates to the caller.
+- A grammar package that is an ES module (`"type": "module"`, e.g. `tree-sitter-c-sharp` 0.23.5) needs `require(esm)`: Node 20.19.0+ on 20.x, 22.12.0+ on 22.x; the default experimental warning stops from 20.19.0 and 22.13.0 (22.12.x may warn). Older Node, and a grammar with top-level await, report `grammar-load-failed`. Source: [Node's modules docs](https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require), summarised by a fetch tool on 2026-11-06 (not a raw read).
 
 ### Cached source — convenience subpaths
 
@@ -237,7 +237,7 @@ interface SymbolEntry {
 }
 ```
 
-`@verevoir/context/code` populates these from tree-sitter parses (TypeScript / TSX / JavaScript today). Consumers can also populate from their own parsers.
+`@verevoir/context/code` populates these from tree-sitter parses (ten languages: TypeScript, TSX, JavaScript, Python, Java, C#, Go, Scala, C, C++). Consumers can also populate from their own parsers.
 
 ## Per-instance + singleton
 

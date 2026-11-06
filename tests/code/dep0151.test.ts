@@ -21,10 +21,18 @@ import { grammarLoaderForTests } from '../../src/code/grammars.js';
 // the require(esm) namespace `__esModule` (what unwrapDefault relies on);
 // that is only observed on the Node the log line names.
 //
-// The loader's requirer is placed under a `node_modules` path, like the
-// real one (dist/code/grammars.js inside an installed package), because
-// Node only emits its require(esm) ExperimentalWarning for requirers
-// outside node_modules.
+// The loader's requirer is placed under a `node_modules` path to mirror an
+// installed package's layout. UNVERIFIED: no source read for this work says
+// Node suppresses its require(esm) warning inside node_modules, and this
+// test does not rely on it; on a Node that still warns by default (22.12.x)
+// the clean-stderr assertion is relaxed, see noDefaultWarning().
+//
+// Which branch runs where (do not read this as coverage we lack): the
+// LOADED test runs on Node >= 20.19 / 22.12 (CI uses Node 20, which resolves
+// to >= 20.19); the LOAD-FAILED test runs only on older Node and has not
+// been run by anyone on this work. Observed so far: Node v26.5.1, LOADED.
+// Which error older Node throws is unconfirmed, so that branch asserts the
+// kind and logs the code rather than pinning one.
 
 function nodeHasRequireEsm(): boolean {
   const flag = (process.features as unknown as { require_module?: unknown }).require_module;
@@ -32,6 +40,17 @@ function nodeHasRequireEsm(): boolean {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major > 22) return true;
   if (major === 22) return minor >= 12;
+  if (major === 20) return minor >= 19;
+  return false;
+}
+
+/** Per the Node docs summary (see grammars.ts), require(esm) stops warning
+ * by default from 20.19.0 / 22.13.0 / 23.5.0. */
+function noDefaultWarning(): boolean {
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (major > 23) return true;
+  if (major === 23) return minor >= 5;
+  if (major === 22) return minor >= 13;
   if (major === 20) return minor >= 19;
   return false;
 }
@@ -48,7 +67,7 @@ beforeAll(() => {
     `[dep0151] ${NODE}; branch under test: ${
       hasRequireEsm
         ? 'require(esm) SUPPORTED -> the stub must LOAD (default export unwrapped)'
-        : 'require(esm) UNSUPPORTED -> the stub must be grammar-load-failed (ERR_REQUIRE_ESM)'
+        : 'require(esm) UNSUPPORTED -> the stub must be grammar-load-failed'
     }`
   );
   tmp = mkdtempSync(join(tmpdir(), 'dep0151-'));
@@ -136,14 +155,16 @@ describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () 
       const { result, codes } = await loadStubCollectingWarnings();
       console.log(`[dep0151] branch=LOADED on ${NODE}; warnings seen: ${JSON.stringify(codes)}`);
 
-      expect(codes).toEqual([]);
+      expect(codes).not.toContain('DEP0151');
+      // Clean stderr is only promised where the default warning is gone.
+      if (noDefaultWarning()) expect(codes).toEqual([]);
       expect(result.kind).toBe('loaded');
       if (result.kind === 'loaded') expect(result.grammar).toEqual({ name: 'stub-csharp' });
     }
   );
 
   it.runIf(!hasRequireEsm)(
-    'no-require(esm) branch: the loader reports the stub as grammar-load-failed (ERR_REQUIRE_ESM), no DEP0151',
+    'no-require(esm) branch: the loader reports the stub as grammar-load-failed and emits no DEP0151',
     async () => {
       const { result, codes } = await loadStubCollectingWarnings();
       console.log(
@@ -153,7 +174,7 @@ describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () 
       expect(codes).toEqual([]);
       expect(result.kind).toBe('grammar-load-failed');
       if (result.kind === 'grammar-load-failed') {
-        expect((result.cause as { code?: string }).code).toBe('ERR_REQUIRE_ESM');
+        console.log(`[dep0151] cause.code on ${NODE}: ${(result.cause as { code?: string }).code}`);
       }
     }
   );
