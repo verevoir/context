@@ -58,11 +58,11 @@ const syms = findSymbols('Auth', { sources: [{ sourceId: '...', version: '' }] }
 
 Grammars load lazily on first use of a language (via `createRequire`), cached per language; importing the subpath loads none.
 
-- `loadGrammar(language)` → `GrammarLoadResult`: `{ kind: 'loaded', language, grammar }` | `{ kind: 'grammar-not-installed' | 'grammar-load-failed', language, reason, cause }` (`GrammarFailure`). Not-installed = MODULE_NOT_FOUND for the grammar package itself; load-failed = present but throws, no usable export, or rejected by `parser.setLanguage`.
+- `loadGrammar(language)` → `GrammarLoadResult`: `{ kind: 'loaded', language, grammar }` | `{ kind: 'grammar-not-installed' | 'grammar-load-failed', language, reason, cause }` (`GrammarFailure`). Not-installed = MODULE_NOT_FOUND / ERR_MODULE_NOT_FOUND naming the grammar package itself; load-failed = any other failure (present but throws, nested dependency missing, no usable export, ES module on a Node without `require(esm)`, or rejected by `parser.setLanguage`).
 - `tryParseCode(language, source)` → `ParseCodeResult`: `{ kind: 'parsed', symbols, edges }` | `GrammarFailure`.
 - `parseCode` / `parseSymbols` keep their sync signatures and throw `GrammarUnavailableError` (`kind`, `language`, `reason`, original error on `cause`).
-- `findSymbols(..., { onSkip })` and `edgesForItem(store, sourceId, version, itemId, { onSkip })`: still return empty for a file whose grammar is unavailable, don't cache that empty result, and call `onSkip(SkippedItem)` (`sourceId`, `version`, `itemId`, `language`, `kind`, `reason`). A throwing `onSkip` propagates.
-- A failure is cached per language for the process; installing/fixing a package needs a restart.
+- `findSymbols(..., { onSkip })` and `edgesForItem(store, sourceId, version, itemId, { onSkip })`: still return empty for a file whose grammar is unavailable or whose parse throws (`kind: 'parse-failed'`), don't cache that empty result, and call `onSkip(SkippedItem)` (`sourceId`, `version`, `itemId`, `language`, `kind`, `reason`). A throwing `onSkip` propagates.
+- A permanent failure is cached per language for the process (installing/fixing a package needs a restart); transient ones (EMFILE, ENFILE, EAGAIN, EBUSY, EIO, EINTR, ETIMEDOUT, EACCES) are not cached.
 - ES-module grammar packages (`"type": "module"`, e.g. tree-sitter-c-sharp 0.23.5) need `require(esm)`: Node 20.19.0+ / 22.12.0+; older Node reports `grammar-load-failed` (`ERR_REQUIRE_ESM`).
 
 ## Freshness validation

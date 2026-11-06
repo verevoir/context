@@ -17,7 +17,14 @@ import { grammarLoaderForTests } from '../../src/code/grammars.js';
 // Which outcome the loader must give for the stub depends on the Node
 // running the tests (require(esm) is unflagged from 20.19.0 / 22.12.0),
 // so the branch is chosen BY NODE VERSION and logged, and exactly one of
-// the two loader tests runs.
+// the two loader tests runs. The loaded branch also pins that Node marks
+// the require(esm) namespace `__esModule` (what unwrapDefault relies on);
+// that is only observed on the Node the log line names.
+//
+// The loader's requirer is placed under a `node_modules` path, like the
+// real one (dist/code/grammars.js inside an installed package), because
+// Node only emits its require(esm) ExperimentalWarning for requirers
+// outside node_modules.
 
 function nodeHasRequireEsm(): boolean {
   const flag = (process.features as unknown as { require_module?: unknown }).require_module;
@@ -78,7 +85,9 @@ afterEach(() => grammarLoaderForTests.setRequire(null));
 /** Load the stub through the loader's createRequire path, collecting
  * every process warning emitted meanwhile. */
 async function loadStubCollectingWarnings() {
-  grammarLoaderForTests.setRequire(createRequire(join(tmp, 'probe.js')));
+  grammarLoaderForTests.setRequire(
+    createRequire(join(tmp, 'node_modules', '@verevoir', 'context', 'dist', 'code', 'grammars.js'))
+  );
   const codes: string[] = [];
   const onWarning = (w: Error & { code?: string }): void => {
     codes.push(w.code ?? w.name);
@@ -99,7 +108,19 @@ describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () 
       cwd: tmp,
       encoding: 'utf8',
     });
-    const seen = JSON.parse(run.stdout.trim().split('\n').pop() ?? '[]') as string[];
+    const lastLine = run.stdout.trim().split('\n').pop();
+    if (!lastLine) {
+      throw new Error(
+        `dep0151 probe printed nothing (status=${run.status}, signal=${run.signal}, ` +
+          `error=${run.error?.message}, stderr=${run.stderr.slice(0, 500)})`
+      );
+    }
+    let seen: string[];
+    try {
+      seen = JSON.parse(lastLine) as string[];
+    } catch {
+      throw new Error(`dep0151 probe printed non-JSON last line: ${lastLine.slice(0, 200)}`);
+    }
     if (!seen.includes('DEP0151')) {
       const why = `${NODE} did not emit DEP0151 for the stub; saw ${JSON.stringify(seen)}`;
       console.log(`[dep0151] control SKIPPED: ${why}`);
@@ -115,7 +136,7 @@ describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () 
       const { result, codes } = await loadStubCollectingWarnings();
       console.log(`[dep0151] branch=LOADED on ${NODE}; warnings seen: ${JSON.stringify(codes)}`);
 
-      expect(codes).not.toContain('DEP0151');
+      expect(codes).toEqual([]);
       expect(result.kind).toBe('loaded');
       if (result.kind === 'loaded') expect(result.grammar).toEqual({ name: 'stub-csharp' });
     }
@@ -129,7 +150,7 @@ describe('DEP0151 (stub with the tree-sitter-c-sharp 0.23.5 package shape)', () 
         `[dep0151] branch=LOAD-FAILED on ${NODE}; warnings seen: ${JSON.stringify(codes)}`
       );
 
-      expect(codes).not.toContain('DEP0151');
+      expect(codes).toEqual([]);
       expect(result.kind).toBe('grammar-load-failed');
       if (result.kind === 'grammar-load-failed') {
         expect((result.cause as { code?: string }).code).toBe('ERR_REQUIRE_ESM');

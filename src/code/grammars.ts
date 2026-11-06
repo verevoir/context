@@ -1,45 +1,31 @@
 // Internal to @verevoir/context/code — lazy tree-sitter grammar loading.
-// The loading semantics are described HERE, once; index.ts and the docs
-// refer to this file.
+// Not a package entry: `exports` maps only `./code` → dist/code/index.js,
+// which re-exports the public names. `grammarLoaderForTests` is not.
 //
-// Not a package entry point: `package.json` `exports` maps only
-// `./code` → `dist/code/index.js`, which re-exports the public names
-// below. The test seam (`grammarLoaderForTests`) is deliberately NOT
-// re-exported from `index.ts`.
+// Each grammar is `require`d on first use through
+// `createRequire(import.meta.url)`, not statically imported (a static
+// import loads every grammar up front, and tree-sitter-c-sharp 0.23.5 —
+// "type": "module", extensionless "main" — makes the ESM resolver emit
+// DEP0151).
 //
-// Each grammar is `require`d on FIRST USE for its language through
-// `createRequire(import.meta.url)` and cached per language — success AND
-// failure. A static ESM `import` would load every grammar when the
-// module is imported, and tree-sitter-c-sharp 0.23.5 ("type": "module",
-// extensionless "main": "bindings/node") makes Node's ESM resolver emit
-// DEP0151.
+// Outcomes: `loaded`; `grammar-not-installed` (MODULE_NOT_FOUND /
+// ERR_MODULE_NOT_FOUND naming the grammar package itself);
+// `grammar-load-failed` (anything else, including `parser.setLanguage`
+// rejecting the grammar). Failures are frozen and carry the original
+// error as `cause`. Permanent failures are cached per language for the
+// process (a later install needs a restart); transient ones
+// (TRANSIENT_CODES) are returned but not cached, so the next call retries.
 //
-// Outcomes (`GrammarLoadResult`):
-// - `loaded`                — grammar object, cached.
-// - `grammar-not-installed` — `require` failed with MODULE_NOT_FOUND /
-//                             ERR_MODULE_NOT_FOUND naming the grammar
-//                             package itself.
-// - `grammar-load-failed`   — anything else: the package is present but
-//                             throws while loading (ABI mismatch, bad
-//                             `main`, a missing nested dependency, no
-//                             usable export, `require(esm)` unsupported)
-//                             or `parser.setLanguage` rejects the grammar
-//                             (`recordLoadFailure`).
-// Failures carry the original error as `cause`, are frozen, and are
-// cached for the life of the process: the doomed `require` is not re-run
-// for every file, and installing / fixing the package needs a process
-// restart. The only in-process clear is the test seam.
-//
-// A grammar package that is itself an ES module needs `require(esm)`,
-// which is unflagged from Node 20.19.0 / 22.12.0; on older Node it fails
-// as `grammar-load-failed` (ERR_REQUIRE_ESM).
+// An ES-module grammar needs require(esm): Node >= 20.19.0 on 20.x and
+// >= 22.12.0 on 22.x (Node docs, "Loading ECMAScript modules using
+// require()"; the same range is vite's `engines` in package-lock.json).
+// Older Node: `grammar-load-failed` with ERR_REQUIRE_ESM.
 
 import { createRequire } from 'node:module';
 import type { SupportedLanguage } from './index.js';
 
-/** Package + export selector for each language's grammar. Ten
- * languages, nine packages (tree-sitter-typescript serves both
- * `typescript` and `tsx`). */
+/** Package + export selector per language: ten languages, nine packages
+ * (tree-sitter-typescript serves both `typescript` and `tsx`). */
 const GRAMMAR_SOURCES: Readonly<
   Record<SupportedLanguage, { pkg: string; pick?: (mod: any) => unknown }>
 > = {
@@ -54,6 +40,22 @@ const GRAMMAR_SOURCES: Readonly<
   c: { pkg: 'tree-sitter-c' },
   cpp: { pkg: 'tree-sitter-cpp' },
 };
+
+/** Error codes that may clear on their own (descriptor exhaustion, a busy
+ * or momentarily unreadable file); a failure with one of these is not
+ * cached. Everything else (package absent, ERR_REQUIRE_ESM,
+ * ERR_DLOPEN_FAILED, no usable export, setLanguage rejection) is
+ * permanent for the process. */
+const TRANSIENT_CODES: ReadonlySet<string> = new Set([
+  'EMFILE',
+  'ENFILE',
+  'EAGAIN',
+  'EBUSY',
+  'EIO',
+  'EINTR',
+  'ETIMEDOUT',
+  'EACCES',
+]);
 
 /** The grammar package is not installed. */
 export interface GrammarNotInstalled {
@@ -79,9 +81,9 @@ export type GrammarLoadResult =
   | { kind: 'loaded'; language: SupportedLanguage; grammar: unknown }
   | GrammarFailure;
 
-/** Thrown by the sync `parseCode` / `parseSymbols` when the grammar for
- * the requested language is unavailable. `kind` is the failure's kind;
- * the original error is on `cause`. */
+/** Thrown by the sync `parseCode` / `parseSymbols` when the grammar is
+ * unavailable; carries the failure's `kind`, `language`, `reason`, and the
+ * original error as `cause`. */
 export class GrammarUnavailableError extends Error {
   readonly kind: GrammarFailure['kind'];
   readonly language: SupportedLanguage;
@@ -108,20 +110,37 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** True when `err` is a MODULE_NOT_FOUND / ERR_MODULE_NOT_FOUND for the
- * grammar package ITSELF (first line of the message names it in
- * quotes), not for something the package requires. */
-function isPackageAbsent(err: unknown, pkg: string): boolean {
-  if (!(err instanceof Error)) return false;
-  const code = (err as { code?: unknown }).code;
-  if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND') return false;
-  return err.message.split('\n')[0].includes(`'${pkg}'`);
+function errorCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
 }
 
-/** `require(esm)` returns the namespace; Node marks a default-exporting
- * ES module with `__esModule: true`. Unwrap to the default so an
- * ESM-flavoured grammar package yields the same object a CJS one does.
- * (tests/code/dep0151.test.ts logs the Node it verified this on.) */
+function failureFor(
+  language: SupportedLanguage,
+  kind: GrammarFailure['kind'],
+  err: unknown
+): GrammarFailure {
+  return Object.freeze({
+    kind,
+    language,
+    reason: describeError(err),
+    cause: err,
+  }) as GrammarFailure;
+}
+
+/** True when `err` is a not-found error for the grammar package ITSELF
+ * (first message line names it in quotes), not for something it requires. */
+function isPackageAbsent(err: unknown, pkg: string): boolean {
+  const code = errorCode(err);
+  if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND') return false;
+  return (err as Error).message.split('\n')[0].includes(`'${pkg}'`);
+}
+
+/** `require(esm)` returns the namespace, which Node marks `__esModule:
+ * true` when the module has a default export (Node docs, same section as
+ * above). Unwrap to the default so an ES-module grammar yields the same
+ * object a CommonJS one does. LIMIT: exercised only on Node 26.5.1
+ * (tests/code/dep0151.test.ts logs the Node); not run on 20.19 / 22.12. */
 function unwrapDefault(mod: unknown): unknown {
   if (mod && typeof mod === 'object' && (mod as { __esModule?: unknown }).__esModule === true) {
     if ('default' in mod) return (mod as { default: unknown }).default;
@@ -130,23 +149,18 @@ function unwrapDefault(mod: unknown): unknown {
 }
 
 /** Record (and cache) that a language's grammar loaded but cannot be
- * used — e.g. `parser.setLanguage` threw on an ABI mismatch. Replaces
- * any cached success for the language. */
+ * used — e.g. `parser.setLanguage` threw on an ABI mismatch. Replaces any
+ * cached success for the language. */
 export function recordLoadFailure(language: SupportedLanguage, err: unknown): GrammarLoadFailed {
-  const failure = Object.freeze<GrammarLoadFailed>({
-    kind: 'grammar-load-failed',
-    language,
-    reason: describeError(err),
-    cause: err,
-  });
+  const failure = failureFor(language, 'grammar-load-failed', err) as GrammarLoadFailed;
   grammarCache.delete(language);
   failureCache.set(language, failure);
   return failure;
 }
 
-/** Load (first use) and cache the grammar for a language. Never throws;
- * a failure is cached too and the same frozen object is returned next
- * time. */
+/** Load (first use) and cache the grammar for a language. Never throws.
+ * A permanent failure is cached and the same frozen object returned next
+ * time; a transient one is returned uncached. */
 export function loadGrammar(language: SupportedLanguage): GrammarLoadResult {
   if (grammarCache.has(language)) {
     return { kind: 'loaded', language, grammar: grammarCache.get(language) };
@@ -162,23 +176,17 @@ export function loadGrammar(language: SupportedLanguage): GrammarLoadResult {
     grammarCache.set(language, grammar);
     return { kind: 'loaded', language, grammar };
   } catch (err) {
-    if (isPackageAbsent(err, source.pkg)) {
-      const failure = Object.freeze<GrammarNotInstalled>({
-        kind: 'grammar-not-installed',
-        language,
-        reason: describeError(err),
-        cause: err,
-      });
-      failureCache.set(language, failure);
-      return failure;
-    }
-    return recordLoadFailure(language, err);
+    const kind = isPackageAbsent(err, source.pkg) ? 'grammar-not-installed' : 'grammar-load-failed';
+    const failure = failureFor(language, kind, err);
+    const code = errorCode(err);
+    if (code === undefined || !TRANSIENT_CODES.has(code)) failureCache.set(language, failure);
+    return failure;
   }
 }
 
-/** TEST SEAM — internal, not exported from the package. `setRequire`
- * swaps the `require` used to load grammars (null restores the real
- * one) and clears the success AND failure caches; `reset` clears both. */
+/** TEST SEAM — internal, not exported from the package. `setRequire` swaps
+ * the `require` used to load grammars (null restores the real one) and
+ * clears both caches; `reset` clears both caches. */
 export const grammarLoaderForTests = {
   setRequire(fn: RequireFn | null): void {
     requireFn = fn ?? defaultRequire;
@@ -188,11 +196,5 @@ export const grammarLoaderForTests = {
   reset(): void {
     grammarCache.clear();
     failureCache.clear();
-  },
-  loadedLanguages(): SupportedLanguage[] {
-    return [...grammarCache.keys()];
-  },
-  failedLanguages(): SupportedLanguage[] {
-    return [...failureCache.keys()];
   },
 };

@@ -29,7 +29,8 @@
 // caching are described once, in ./grammars.ts. Here: `tryParseCode`
 // returns those outcomes, `parseCode` / `parseSymbols` throw
 // `GrammarUnavailableError`, and `findSymbols` / `edgesForItem` report a
-// skipped file through `onSkip`.
+// skipped file (unavailable grammar, or a parse that threw) through
+// `onSkip` and do not cache its empty result.
 
 import Parser from 'tree-sitter';
 import {
@@ -761,30 +762,51 @@ export interface SymbolHit {
   endLine: number;
 }
 
-/** A file that could not be parsed because its language's grammar is
- * unavailable. Its symbols / edges are returned empty (and not cached)
- * rather than thrown — this reports why. */
+/** A file that could not be parsed: its language's grammar is unavailable
+ * (`grammar-not-installed` / `grammar-load-failed`) or the parse itself
+ * threw (`parse-failed`). Its symbols / edges are returned empty (and not
+ * cached) rather than thrown — this reports why. */
 export interface SkippedItem {
   sourceId: string;
   version: string;
   itemId: string;
   language: SupportedLanguage;
-  kind: GrammarFailure['kind'];
+  kind: GrammarFailure['kind'] | 'parse-failed';
   reason: string;
+}
+
+type ParseAttempt = ParseCodeResult | { kind: 'parse-failed'; reason: string };
+
+/** `tryParseCode`, with a thrown parse error returned as `parse-failed`
+ * instead of propagating. */
+function attemptParse(language: SupportedLanguage, content: string): ParseAttempt {
+  try {
+    return tryParseCode(language, content);
+  } catch (err) {
+    return { kind: 'parse-failed', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function skippedItem(
+  key: { sourceId: string; version: string; itemId: string },
+  language: SupportedLanguage,
+  attempt: Exclude<ParseAttempt, { kind: 'parsed' }>
+): SkippedItem {
+  return { ...key, language, kind: attempt.kind, reason: attempt.reason };
 }
 
 export interface FindSymbolOptions {
   maxResults?: number;
   match?: 'substring' | 'exact';
   store?: ContextStore;
-  /** Called once per file skipped because its grammar is unavailable.
+  /** Called once per file skipped (grammar unavailable, or parse threw).
    * Called outside the parse guard: if it throws, the error reaches the
    * caller and nothing is cached for that file. */
   onSkip?: (skip: SkippedItem) => void;
 }
 
 export interface EdgesForItemOptions {
-  /** Called when the file is skipped because its grammar is unavailable. */
+  /** Called when the file is skipped (grammar unavailable, or parse threw). */
   onSkip?: (skip: SkippedItem) => void;
 }
 
@@ -847,25 +869,16 @@ function symbolsForItem(
     return [];
   }
   // A single unparseable file must never crash a whole-source symbol
-  // search — degrade to "no symbols" and cache that so we don't retry.
-  // A missing / unloadable grammar is different: report it and return
-  // empty WITHOUT caching, so it isn't indistinguishable from a file
-  // that simply has no symbols.
-  let result: ParseCodeResult | null;
-  try {
-    result = tryParseCode(language, content);
-  } catch {
-    result = null;
-  }
-  // Outside the try: a throwing `onSkip` must reach the caller, not be
-  // swallowed into a cached empty result.
-  if (result !== null && result.kind !== 'parsed') {
-    onSkip?.({ sourceId, version, itemId, language, kind: result.kind, reason: result.reason });
+  // search: degrade to empty, but report it and do NOT cache the empty
+  // result, so it is not mistaken for a file with no symbols. `onSkip`
+  // runs outside the parse guard, so a throwing callback reaches the caller.
+  const attempt = attemptParse(language, content);
+  if (attempt.kind !== 'parsed') {
+    onSkip?.(skippedItem(key, language, attempt));
     return [];
   }
-  const symbols: SymbolEntry[] = result !== null && result.kind === 'parsed' ? result.symbols : [];
-  store.setSymbols(key, symbols);
-  return symbols;
+  store.setSymbols(key, attempt.symbols);
+  return attempt.symbols;
 }
 
 /** Get the code-graph edges for a `(sourceId, version, itemId)`,
@@ -889,30 +902,13 @@ export function edgesForItem(
     store.setEdges(key, empty);
     return empty;
   }
-  // As with symbols: one file's parse failure must not crash the
-  // whole code-graph build.
-  // A missing / unloadable grammar is reported and not cached (see
-  // symbolsForItem).
-  let result: ParseCodeResult | null;
-  try {
-    result = tryParseCode(language, content);
-  } catch {
-    result = null;
-  }
-  // Outside the try, as in symbolsForItem.
-  if (result !== null && result.kind !== 'parsed') {
-    options.onSkip?.({
-      sourceId,
-      version,
-      itemId,
-      language,
-      kind: result.kind,
-      reason: result.reason,
-    });
+  // As with symbols: a failure degrades to an empty graph, is reported
+  // through `onSkip` (outside the parse guard) and is not cached.
+  const attempt = attemptParse(language, content);
+  if (attempt.kind !== 'parsed') {
+    options.onSkip?.(skippedItem(key, language, attempt));
     return { imports: [], calls: [] };
   }
-  const edges: CodeEdges =
-    result !== null && result.kind === 'parsed' ? result.edges : { imports: [], calls: [] };
-  store.setEdges(key, edges);
-  return edges;
+  store.setEdges(key, attempt.edges);
+  return attempt.edges;
 }

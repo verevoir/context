@@ -68,6 +68,9 @@ describe('non-Error throws', () => {
 });
 
 describe('unwrapDefault', () => {
+  // Synthetic module shapes. That a REAL require(esm) namespace carries
+  // `__esModule: true` was observed only in dep0151.test.ts, on the Node
+  // that run logs (26.5.1 here); it is not run on 20.19 / 22.12.
   const grammar = { name: 'g' };
 
   it('unwraps the default of a module marked __esModule', () => {
@@ -108,14 +111,24 @@ describe('cached failures are frozen', () => {
 
 describe('a grammar that loads but is rejected by parser.setLanguage', () => {
   // `{}` is a truthy "grammar" that node-tree-sitter refuses.
-  it('tryParseCode returns grammar-load-failed and moves the language from loaded to failed', () => {
+  it('tryParseCode returns grammar-load-failed', () => {
     grammarLoaderForTests.setRequire(() => ({}));
 
-    const result = tryParseCode('python', 'def a():\n    pass\n');
+    expect(tryParseCode('python', 'def a():\n    pass\n').kind).toBe('grammar-load-failed');
+  });
 
-    expect(result.kind).toBe('grammar-load-failed');
-    expect(grammarLoaderForTests.loadedLanguages()).toEqual([]);
-    expect(grammarLoaderForTests.failedLanguages()).toEqual(['python']);
+  it('the rejection is cached: later parses do not require the grammar again', () => {
+    let calls = 0;
+    grammarLoaderForTests.setRequire(() => {
+      calls += 1;
+      return {};
+    });
+
+    tryParseCode('python', 'def a():\n    pass\n');
+    tryParseCode('python', 'def b():\n    pass\n');
+
+    expect(calls).toBe(1);
+    expect(loadGrammar('python').kind).toBe('grammar-load-failed');
   });
 
   it('findSymbols reports it through onSkip instead of caching "no symbols"', () => {
